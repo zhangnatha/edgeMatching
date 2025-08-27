@@ -97,7 +97,7 @@ int main(int argc, const char* argv[])
     // 匹配参数
     const double f_angle_start = -180;
     const double f_angle_stop = 180;
-    const double f_min_score = 0.85;
+    const double f_min_score = 0.7;
     const int f_matche_numbers = 200;
     const double f_max_overlap = 0.5;
     const int f_pyramid_number = -1;
