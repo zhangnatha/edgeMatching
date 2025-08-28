@@ -4,6 +4,7 @@
 This project provides functionality for template matching using OpenCV. It includes shared libraries for template creation and finding, as well as executables for training and inference.
 
 The similarity is defined as:
+
 ![formula1.svg](assert/.md/formula1.svg)
 
 Split into normalized vectors:
