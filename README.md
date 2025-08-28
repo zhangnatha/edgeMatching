@@ -3,23 +3,16 @@
 
 This project provides functionality for template matching using OpenCV. It includes shared libraries for template creation and finding, as well as executables for training and inference.
 
-$
-\text{Similarity} = \cos(\theta_i) = \frac{\sum_{i=1}^n (\mathbf{T}_i \cdot \mathbf{S}_i)}{\sqrt{\sum_{i=1}^n \|\mathbf{T}_i\|^2} \cdot \sqrt{\sum_{i=1}^n \|\mathbf{S}_i\|^2}}
-$
+The similarity is defined as:
+![formula1.svg](assert/.md/formula1.svg)
 
-split
+Split into normalized vectors:
 
-$
-\hat{\mathbf{T}}_i = \frac{\mathbf{T}_i}{\|\mathbf{T}_i\|} = \left[ \frac{T_{i,x}}{\sqrt{T_{i,x}^2 + T_{i,y}^2}}, \frac{T_{i,y}}{\sqrt{T_{i,x}^2 + T_{i,y}^2}} \right], \quad
-\hat{\mathbf{S}}_i = \frac{\mathbf{S}_i}{\|\mathbf{S}_i\|} = \left[ \frac{S_{i,x}}{\sqrt{S_{i,x}^2 + S_{i,y}^2}}, \frac{S_{i,y}}{\sqrt{S_{i,x}^2 + S_{i,y}^2}} \right]
-$
+![formula1.svg](assert/.md/formula2.svg)
 
-then
+Then, the cosine similarity becomes:
 
-$
-\cos(\theta_i) = \hat{\mathbf{T}}_i \cdot \hat{\mathbf{S}}_i = \frac{T_{i,x} S_{i,x} + T_{i,y} S_{i,y}}{\sqrt{T_{i,x}^2 + T_{i,y}^2} \cdot \sqrt{S_{i,x}^2 + S_{i,y}^2}}=(\frac{T_{i,x}}{\sqrt{T_{i,x}^2 + T_{i,y}^2}}*\frac{S_{i,x}}{\sqrt{S_{i,x}^2 + S_{i,y}^2}})+(\frac{T_{i,y}}{\sqrt{T_{i,x}^2 + T_{i,y}^2}}*\frac{S_{i,y}}{\sqrt{S_{i,x}^2 + S_{i,y}^2}})
-$
-
+![formula1.svg](assert/.md/formula3.svg)
 
 > Performance Tests (CPU I7-10700)
 
