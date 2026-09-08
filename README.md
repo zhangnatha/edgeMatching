@@ -108,6 +108,7 @@ cmake --build build --parallel
 
 ```bash
 ./inference [search_image] [model1.json model2.json ...] \
+  [--min-score N] [--max-overlap N] \
   [--scale-min N] [--scale-max N] [--scale-step N] \
   [--min-visible-ratio N] [--output FILE]
 ```
@@ -174,9 +175,15 @@ build/inference assert/src7_6.bmp build/repro/model_7.json --output build/repro/
 build/inference assert/src7_7.bmp build/repro/model_7.json --output build/repro/result_7_7.png | tee build/repro/infer_7_7.log
 build/inference assert/src7_8.bmp build/repro/model_7.json --output build/repro/result_7_8.png | tee build/repro/infer_7_8.log
 
-# m8 多尺度与边界部分可见匹配
-build/inference assert/src8.bmp build/repro/model_8.json --scale-min 0.8 --scale-max 1.2 --scale-step 0.1 --min-visible-ratio 0.5 --output build/repro/result_8.png | tee build/repro/infer_8.log
+# m8 共 7 个真实目标：单尺度搜索，保留边界部分可见目标
+build/inference assert/src8.bmp build/repro/model_8.json --min-score 0.9 --min-visible-ratio 0.5 --output build/repro/result_8.png | tee build/repro/infer_8.log
 ```
+
+`src8.bmp` 中的真实目标尺度均为 `1.0x`。对该图强制遍历 `0.8x`–`1.2x`
+不会增加有效召回，反而会近似按尺度数量成倍增加耗时，并且容易在条形模板的
+局部重复结构上产生低分候选。此处使用 `--min-score 0.9` 过滤分数约为
+`0.70`–`0.86` 的局部匹配，保留 7 个分数为 `0.95`–`0.996` 的真实结果。只有
+待测数据确实存在尺寸变化时，才建议设置 `--scale-min`/`--scale-max`/`--scale-step`。
 
 最后运行确定性合成回归测试：
 

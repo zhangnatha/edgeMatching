@@ -1,6 +1,7 @@
 #include "FindTemplateV1.h"
 #include "Timer.h"
 #include <opencv2/opencv.hpp>
+#include <cmath>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
@@ -11,6 +12,7 @@
 namespace {
 void usage(const char* p) {
     std::cout << "Usage: " << p << " [search_image] [model1.json model2.json ...]"
+              << " [--min-score N] [--max-overlap N]"
               << " [--scale-min N] [--scale-max N] [--scale-step N]"
               << " [--min-visible-ratio N] [--output FILE]\n";
 }
@@ -27,13 +29,19 @@ int main(int argc, const char* argv[]) {
     std::vector<std::string> modelPaths;
     std::string outputPath = "result.png";
     T_T::ScaleSearchCfg scaleCfg;
+    double minScore = 0.7;
+    double maxOverlap = 0.5;
 
     int i = 1;
     if (i < argc && argv[i][0] != '-') imagePath = argv[i++];
     while (i < argc) {
         const std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") { usage(argv[0]); return 0; }
-        if (arg == "--scale-min") {
+        if (arg == "--min-score") {
+            if (!number(i, argc, argv, minScore)) { usage(argv[0]); return 2; }
+        } else if (arg == "--max-overlap") {
+            if (!number(i, argc, argv, maxOverlap)) { usage(argv[0]); return 2; }
+        } else if (arg == "--scale-min") {
             if (!number(i, argc, argv, scaleCfg.scale_min)) { usage(argv[0]); return 2; }
         } else if (arg == "--scale-max") {
             if (!number(i, argc, argv, scaleCfg.scale_max)) { usage(argv[0]); return 2; }
@@ -50,6 +58,11 @@ int main(int argc, const char* argv[]) {
             modelPaths.push_back(arg);
         }
         ++i;
+    }
+    if (!std::isfinite(minScore) || minScore < 0.0 || minScore > 1.0 ||
+        !std::isfinite(maxOverlap) || maxOverlap < 0.0 || maxOverlap > 1.0) {
+        std::cerr << "--min-score and --max-overlap must be in [0, 1].\n";
+        return 2;
     }
     if (modelPaths.empty()) modelPaths.push_back("./model.json");
 
@@ -77,8 +90,10 @@ int main(int argc, const char* argv[]) {
     Timer timer(TimerMethod::HighResolutionClock);
     std::vector<T_T::MatchResult> results;
     timer.start();
-    const bool ok = matcher.searchTemplate(image, cv::Mat(), models, -180, 180, 0.7f, 200,
-                                           0.5f, -1, 0.9f, true, scaleCfg, results);
+    const bool ok = matcher.searchTemplate(image, cv::Mat(), models, -180, 180,
+                                           static_cast<float>(minScore), 200,
+                                           static_cast<float>(maxOverlap), -1, 0.9f,
+                                           true, scaleCfg, results);
     timer.record("Template matching");
     if (!ok) { std::cerr << "Template matching failed; check search parameters.\n"; return 1; }
 
