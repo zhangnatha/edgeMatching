@@ -9,7 +9,7 @@
 - **紧凑的 canonical 模型**：训练时每层金字塔只提取 `0°` canonical 边缘特征；模型加载时根据角度配置生成并缓存搜索角度，避免训练阶段重复旋转和存储。
 - **部分可见目标**：目标被图像边界截断时仍可匹配。评分只使用位于图像内的特征点，并由 `min_visible_ratio` 控制最低可见比例；绘制结果会自动裁剪到图像范围。
 - **多尺度匹配**：无需重新训练模板即可搜索离散尺度范围，例如 `0.8` 至 `1.2`。
-- **多模板匹配**：一次调用可加载多个模型文件；结果包含 `template_id`、位置、角度、尺度、得分和可见比例。
+- **多模板匹配**：一次调用可加载多个模型文件；结果包含 `template_id`、位置、角度、尺度、得分和可见比例。模型 ID 必须为唯一正数。
 - **清晰的结果可视化**：沿外包围矩形边缘平行绘制索引号、模板 ID、得分和尺度；轮廓、矩形和文字均安全裁剪。
 
 ## 相似度原理
@@ -86,13 +86,22 @@ cmake --build build --parallel
 ```bash
 ./train
 ./train ../assert/m1.png
+./train ../assert/m1.png --id 7 --output model_7.json
 ```
+
+完整命令行格式如下：
+
+```bash
+./train [template_image] [--id N] [--output FILE]
+```
+
+不传参数时，默认读取 `../assert/m1.png`，生成 `./model.json`，模板 ID 为 `1`。
 
 匹配程序示例：
 
 ```bash
 ./inference
-./inference ../assert/src.bmp
+./inference ../assert/src1_2_3.bmp
 ```
 
 完整命令行格式如下：
@@ -119,6 +128,62 @@ cmake --build build --parallel
 [index] template_id=... x=... y=... angle=... score=... scale=... visible=...
 ```
 
+## `assert` 样例快速复现
+
+以下命令覆盖 `assert/` 目录中的全部 8 张模板图和 13 张待测图。请在仓库根目录执行；模型、结果图和日志都会写入 `build/repro/`，不会覆盖 `assert/` 内的原图。
+
+先构建程序并创建输出目录：
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+cmake --build build --parallel
+mkdir -p build/repro
+```
+
+训练全部模板（ID 与文件名中的数字一致）：
+
+```bash
+build/train assert/m1.png --id 1 --output build/repro/model_1.json | tee build/repro/train_1.log
+build/train assert/m2.png --id 2 --output build/repro/model_2.json | tee build/repro/train_2.log
+build/train assert/m3.png --id 3 --output build/repro/model_3.json | tee build/repro/train_3.log
+build/train assert/m4.bmp --id 4 --output build/repro/model_4.json | tee build/repro/train_4.log
+build/train assert/m5.jpg --id 5 --output build/repro/model_5.json | tee build/repro/train_5.log
+build/train assert/m6.bmp --id 6 --output build/repro/model_6.json | tee build/repro/train_6.log
+build/train assert/m7.bmp --id 7 --output build/repro/model_7.json | tee build/repro/train_7.log
+build/train assert/m8.bmp --id 8 --output build/repro/model_8.json | tee build/repro/train_8.log
+```
+
+推理全部待测图：
+
+```bash
+# m1、m2、m3 三模板联合匹配
+build/inference assert/src1_2_3.bmp build/repro/model_1.json build/repro/model_2.json build/repro/model_3.json --output build/repro/result_1_2_3.png | tee build/repro/infer_1_2_3.log
+
+# m4、m5、m6 单模板匹配
+build/inference assert/src4.bmp build/repro/model_4.json --output build/repro/result_4.png | tee build/repro/infer_4.log
+build/inference assert/src5.bmp build/repro/model_5.json --output build/repro/result_5.png | tee build/repro/infer_5.log
+build/inference assert/src6.jpg build/repro/model_6.json --output build/repro/result_6.png | tee build/repro/infer_6.log
+
+# m7 在 8 张旋转/位移待测图上匹配
+build/inference assert/src7_1.bmp build/repro/model_7.json --output build/repro/result_7_1.png | tee build/repro/infer_7_1.log
+build/inference assert/src7_2.bmp build/repro/model_7.json --output build/repro/result_7_2.png | tee build/repro/infer_7_2.log
+build/inference assert/src7_3.bmp build/repro/model_7.json --output build/repro/result_7_3.png | tee build/repro/infer_7_3.log
+build/inference assert/src7_4.bmp build/repro/model_7.json --output build/repro/result_7_4.png | tee build/repro/infer_7_4.log
+build/inference assert/src7_5.bmp build/repro/model_7.json --output build/repro/result_7_5.png | tee build/repro/infer_7_5.log
+build/inference assert/src7_6.bmp build/repro/model_7.json --output build/repro/result_7_6.png | tee build/repro/infer_7_6.log
+build/inference assert/src7_7.bmp build/repro/model_7.json --output build/repro/result_7_7.png | tee build/repro/infer_7_7.log
+build/inference assert/src7_8.bmp build/repro/model_7.json --output build/repro/result_7_8.png | tee build/repro/infer_7_8.log
+
+# m8 多尺度与边界部分可见匹配
+build/inference assert/src8.bmp build/repro/model_8.json --scale-min 0.8 --scale-max 1.2 --scale-step 0.1 --min-visible-ratio 0.5 --output build/repro/result_8.png | tee build/repro/infer_8.log
+```
+
+最后运行确定性合成回归测试：
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
 ## 算法说明
 
 ### 模板制作
@@ -134,6 +199,8 @@ JSON 模型只保存 canonical 特征。加载 JSON 或二进制模型时，匹�
 对于部分可见目标，变换后位于图像外的点会被安全跳过，得分按可见点数归一化；`min_visible_ratio` 可拒绝可见特征过少的候选。绘制时同样裁剪轮廓和旋转矩形。
 
 多尺度匹配按 `scale_step` 遍历 `scale_min` 至 `scale_max`，并执行跨尺度重叠抑制。结果中的 `scale` 表示目标相对于训练模板的尺寸比例。多模板匹配逐个复用公开搜索接口，记录 `template_id`，合并候选后统一执行重叠抑制。
+
+多模板接口要求模型指针非空，且每个模型的 `template_id` 为唯一正数；不满足时接口返回 `false`。
 
 完整的数学推导、边界处理和工程注意事项见 [docs/template_matching_algorithm.md](docs/template_matching_algorithm.md)。
 

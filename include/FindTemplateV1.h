@@ -100,6 +100,7 @@ namespace SM_V1
 
         /**
          * @brief 多模板、多尺度匹配，结果中的 template_id 用于回溯模板。
+         * @note models 中每个指针必须非空，且 template_cfg.id 必须为唯一正数。
          */
         bool searchTemplate(cv::Mat image, cv::Mat s_mask_image,
                             const std::vector<T_T::Template::Ptr>& models,
@@ -110,7 +111,7 @@ namespace SM_V1
                             const T_T::ScaleSearchCfg& scale_cfg,
                             std::vector<T_T::MatchResult>& result_list);
 
-        /** @brief ROI 内的多模板、多尺度匹配。 */
+        /** @brief ROI 内的多模板、多尺度匹配；模型指针非空且 ID 唯一为正。 */
         bool searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi,
                             const std::vector<T_T::Template::Ptr>& models,
                             int angle_start, int angle_extent,

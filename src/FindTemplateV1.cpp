@@ -5,6 +5,7 @@
 #include <thread>
 #include <fstream>
 #include <immintrin.h>
+#include <set>
 
 using namespace SM_V1;
 
@@ -1253,7 +1254,7 @@ bool SearchTemplate::_searchTemplateSingleScale(
                 //由padding图上的结果还原至原图上的结果(左扩边界left,上扩边界top)
                 T_T::MatchResult Po{
                     T_T::Pose2d(ResultListLow.pose.x - left, ResultListLow.pose.y - top, ResultListLow.pose.angle),
-                    ResultListLow.score
+                    ResultListLow.score, 1.0, -1, ResultListLow.visible_ratio
                 };
                 if (Po.pose.x >= 0 && Po.pose.y >= 0 && Po.pose.x <= Image.cols && Po.pose.y <= Image.rows)
                     if (Po.pose.x >= 0 && Po.pose.y >= 0 && Po.pose.x <= Image.cols && Po.pose.y <= Image.rows)
@@ -1362,29 +1363,11 @@ bool SearchTemplate::_searchTemplateSingleScale(
 
 namespace
 {
-double rotatedIoU(const T_T::MatchResult& a, const T_T::MatchResult& b,
-                  const T_T::Template& model)
-{
-    cv::RotatedRect ra(cv::Point2f(a.pose.x, a.pose.y),
-                       cv::Size2f(model.template_cfg.image_width * a.scale,
-                                  model.template_cfg.image_height * a.scale),
-                       -a.pose.angle);
-    cv::RotatedRect rb(cv::Point2f(b.pose.x, b.pose.y),
-                       cv::Size2f(model.template_cfg.image_width * b.scale,
-                                  model.template_cfg.image_height * b.scale),
-                       -b.pose.angle);
-    std::vector<cv::Point2f> intersection;
-    if (cv::rotatedRectangleIntersection(ra, rb, intersection) == cv::INTERSECT_NONE ||
-        intersection.empty()) return 0.0;
-    const double inter = std::abs(cv::contourArea(intersection));
-    const double uni = ra.size.area() + rb.size.area() - inter;
-    return uni > 0.0 ? inter / uni : 0.0;
-}
-
 bool validScaleCfg(const T_T::ScaleSearchCfg& cfg)
 {
     return std::isfinite(cfg.scale_min) && std::isfinite(cfg.scale_max) &&
-           std::isfinite(cfg.scale_step) && cfg.scale_min > 0.0 &&
+           std::isfinite(cfg.scale_step) && std::isfinite(cfg.min_visible_ratio) &&
+           cfg.scale_min > 0.0 &&
            cfg.scale_max >= cfg.scale_min && cfg.scale_step > 0.0 &&
            cfg.min_visible_ratio > 0.0 && cfg.min_visible_ratio <= 1.0;
 }
@@ -1475,11 +1458,22 @@ bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi
         bool suppressed = false;
         for (const auto& accepted : kept)
         {
-            if (rotatedIoU(candidate, accepted, *model_id) > max_overlap)
-            {
-                suppressed = true;
-                break;
+            // 同一模板不同尺度的重复候选按较小框归一化，避免小尺度重复漏抑制。
+            const cv::RotatedRect ra(cv::Point2f(candidate.pose.x, candidate.pose.y),
+                                     cv::Size2f(model_id->template_cfg.image_width * candidate.scale,
+                                                model_id->template_cfg.image_height * candidate.scale),
+                                     -candidate.pose.angle);
+            const cv::RotatedRect rb(cv::Point2f(accepted.pose.x, accepted.pose.y),
+                                     cv::Size2f(model_id->template_cfg.image_width * accepted.scale,
+                                                model_id->template_cfg.image_height * accepted.scale),
+                                     -accepted.pose.angle);
+            std::vector<cv::Point2f> overlap;
+            if (cv::rotatedRectangleIntersection(ra, rb, overlap) != cv::INTERSECT_NONE && !overlap.empty()) {
+                const double inter = std::abs(cv::contourArea(overlap));
+                const double denom = std::min(ra.size.area(), rb.size.area());
+                if (denom > 0.0 && inter / denom > max_overlap) suppressed = true;
             }
+            if (suppressed) break;
         }
         if (!suppressed) kept.push_back(candidate);
     }
@@ -1518,53 +1512,51 @@ bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi
                                     const T_T::ScaleSearchCfg& scale_cfg,
                                     std::vector<T_T::MatchResult>& result_list)
 {
-    if (models.empty()) return false;
+    if (image.empty() || models.empty() || !validScaleCfg(scale_cfg)) return false;
+    std::set<int> templateIds;
+    for (const auto& model : models)
+    {
+        if (!model || model->template_cfg.id <= 0 ||
+            !templateIds.insert(model->template_cfg.id).second)
+            return false;
+    }
     std::vector<T_T::MatchResult> merged;
     for (const auto& model : models)
     {
-        if (!model) continue;
         std::vector<T_T::MatchResult> current;
-        searchTemplate(image, s_mask_image, roi, model, angle_start, angle_extent,
-                       min_score, -1, max_overlap, num_levels, greediness,
-                       sort_by_y, scale_cfg, current);
+        if (!searchTemplate(image, s_mask_image, roi, model, angle_start, angle_extent,
+                            min_score, -1, max_overlap, num_levels, greediness,
+                            sort_by_y, scale_cfg, current))
+            return false;
         merged.insert(merged.end(), current.begin(), current.end());
     }
     std::sort(merged.begin(), merged.end(), [](const T_T::MatchResult& a,
                                                const T_T::MatchResult& b)
     { return a.score > b.score; });
-    // 跨模板合并 NMS：重叠物体仅保留全局得分最高的解。
+    // 不同模板允许重叠；仅在各模板内部抑制重复候选。
     std::vector<T_T::MatchResult> kept;
     for (const auto& candidate : merged)
     {
-        const T_T::Template::Ptr* candidateModel = nullptr;
-        for (const auto& model : models)
-            if (model && model->template_cfg.id == candidate.template_id)
-            { candidateModel = &model; break; }
-        if (!candidateModel) continue;
-        cv::RotatedRect candidateRect(
-            cv::Point2f(candidate.pose.x, candidate.pose.y),
-            cv::Size2f((*candidateModel)->template_cfg.image_width * candidate.scale,
-                       (*candidateModel)->template_cfg.image_height * candidate.scale),
-            -candidate.pose.angle);
         bool suppressed = false;
         for (const auto& accepted : kept)
         {
-            const T_T::Template::Ptr* acceptedModel = nullptr;
+            if (candidate.template_id != accepted.template_id) continue;
+            const T_T::Template::Ptr* candidateModel = nullptr;
             for (const auto& model : models)
-                if (model && model->template_cfg.id == accepted.template_id)
-                { acceptedModel = &model; break; }
-            if (!acceptedModel) continue;
-            cv::RotatedRect acceptedRect(
-                cv::Point2f(accepted.pose.x, accepted.pose.y),
-                cv::Size2f((*acceptedModel)->template_cfg.image_width * accepted.scale,
-                           (*acceptedModel)->template_cfg.image_height * accepted.scale),
-                -accepted.pose.angle);
+                if (model && model->template_cfg.id == candidate.template_id) { candidateModel = &model; break; }
+            if (!candidateModel) continue;
+            cv::RotatedRect candidateRect(cv::Point2f(candidate.pose.x, candidate.pose.y),
+                cv::Size2f((*candidateModel)->template_cfg.image_width * candidate.scale,
+                           (*candidateModel)->template_cfg.image_height * candidate.scale), -candidate.pose.angle);
+            cv::RotatedRect acceptedRect(cv::Point2f(accepted.pose.x, accepted.pose.y),
+                cv::Size2f((*candidateModel)->template_cfg.image_width * accepted.scale,
+                           (*candidateModel)->template_cfg.image_height * accepted.scale), -accepted.pose.angle);
             std::vector<cv::Point2f> intersection;
             if (cv::rotatedRectangleIntersection(candidateRect, acceptedRect, intersection) ==
                     cv::INTERSECT_NONE || intersection.empty()) continue;
             const double inter = std::abs(cv::contourArea(intersection));
-            const double uni = candidateRect.size.area() + acceptedRect.size.area() - inter;
-            if (uni > 0.0 && inter / uni > max_overlap)
+            const double denom = std::min(candidateRect.size.area(), acceptedRect.size.area());
+            if (denom > 0.0 && inter / denom > max_overlap)
             { suppressed = true; break; }
         }
         if (!suppressed) kept.push_back(candidate);

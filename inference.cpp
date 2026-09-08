@@ -6,6 +6,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <set>
 
 namespace {
 void usage(const char* p) {
@@ -57,9 +58,19 @@ int main(int argc, const char* argv[]) {
 
     SM_V1::SearchTemplate matcher;
     std::vector<T_T::Template::Ptr> models;
+    std::set<int> usedIds;
+    int nextId = 1;
     for (const auto& path : modelPaths) {
         auto model = matcher.loadModelFileFromJson(path);
         if (!model) { std::cerr << "Failed to load model: " << path << '\n'; return 1; }
+        int id = model->template_cfg.id;
+        if (id <= 0 || usedIds.count(id) != 0) {
+            while (usedIds.count(nextId) != 0) ++nextId;
+            id = nextId++;
+            model->template_cfg.id = id;
+            std::cout << "Assigned unique template ID " << id << " to " << path << '\n';
+        }
+        usedIds.insert(id);
         models.push_back(model);
     }
 

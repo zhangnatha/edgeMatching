@@ -23,10 +23,10 @@ cv::Mat makePattern(bool alternate) {
 
 T_T::Template::Ptr train(const cv::Mat& image, int id) {
     auto model = std::make_shared<T_T::Template>();
+    model->template_cfg.id = id;
     cv::Mat mask(image.size(), CV_8UC1, cv::Scalar(255));
     SM_V1::CreateTemplate creator;
     if (!creator.createTemplate(image, mask, 0, 0, 0, 1.0, false, 15, 60, model)) return nullptr;
-    model->template_cfg.id = id;
     return model;
 }
 
@@ -60,7 +60,15 @@ int main() {
     auto modelA = train(patternA, 101);
     auto modelB = train(patternB, 202);
     if (!modelA || !modelB) return 1;
+    if (modelA->template_cfg.id != 101 || modelB->template_cfg.id != 202) return 2;
     if (modelA->templates.size() != 1 || modelA->templates[0]->shape_angle.size() != 1) return 2;
+
+    auto defaultModel = std::make_shared<T_T::Template>();
+    cv::Mat defaultMask(patternA.size(), CV_8UC1, cv::Scalar(255));
+    SM_V1::CreateTemplate creator;
+    if (defaultModel->template_cfg.id != 1 ||
+        !creator.createTemplate(patternA, defaultMask, 0, 0, 0, 1.0, false, 15, 60, defaultModel) ||
+        defaultModel->template_cfg.id != 1 || !defaultModel->is_inited) return 2;
 
     SM_V1::SearchTemplate matcher;
     const double scales[] = {0.8, 1.0, 1.2};
@@ -75,6 +83,12 @@ int main() {
             return 4;
         }
     }
+
+    std::vector<T_T::MatchResult> crossScaleResults;
+    if (!matcher.searchTemplate(sceneWith(patternA, 1.0, 145, 90), cv::Mat(), modelA,
+                                0, 0, 0.55f, 10, 0.4f, 0, 0.8f, true,
+                                T_T::ScaleSearchCfg(0.8, 1.2, 0.1, 1.0), crossScaleResults) ||
+        crossScaleResults.size() != 1 || !nearResult(crossScaleResults, 101, 1.0, 145, 90, 8.0)) return 4;
 
     const cv::Mat partial = sceneWith(patternA, 1.0, 285, 90);
     std::vector<T_T::MatchResult> partialResults;
@@ -93,6 +107,15 @@ int main() {
                                 0.4f, 0, 0.8f, true, T_T::ScaleSearchCfg(), multiResults)) return 7;
     if (!nearResult(multiResults, 101, 1.0, 75, 90, 8.0) ||
         !nearResult(multiResults, 202, 1.0, 220, 90, 8.0)) return 8;
+
+    if (matcher.searchTemplate(multiScene, cv::Mat(),
+                               std::vector<T_T::Template::Ptr>{modelA, nullptr},
+                               0, 0, 0.55f, 10, 0.4f, 0, 0.8f, true,
+                               T_T::ScaleSearchCfg(), multiResults)) return 10;
+    if (matcher.searchTemplate(multiScene, cv::Mat(),
+                               std::vector<T_T::Template::Ptr>{modelA, modelA},
+                               0, 0, 0.55f, 10, 0.4f, 0, 0.8f, true,
+                               T_T::ScaleSearchCfg(), multiResults)) return 11;
 
     cv::Mat color;
     cv::cvtColor(partial, color, cv::COLOR_GRAY2BGR);

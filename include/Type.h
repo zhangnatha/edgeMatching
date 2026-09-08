@@ -26,6 +26,15 @@ namespace T_T
         int image_width;   //原模板图像宽度
         int image_height;  //原模板图像高度
         bool is_inited;    //初始化标志
+
+        // createTemplate reads id before it overwrites the remaining fields,
+        // so a newly allocated configuration must be fully initialized.
+        TemplateCfg()
+            : num_levels(0), angle_start(0), angle_end(0), angle_step(1.0),
+              create_otsu(false), max_contrast(0), min_contrast(0), id(1),
+              image_width(0), image_height(0), is_inited(false)
+        {
+        }
     };
 
     //模板提取的特征点信息
@@ -77,8 +86,10 @@ namespace T_T
         S_PTR(Template)
         TemplateCfg template_cfg;              // 模板配置
         std::vector<ShapeInfo::Ptr> templates; //模板图像的特征信息
-        bool is_empty = true;
+        bool is_empty;
         bool is_inited; /**<  初始化标志 */
+
+        Template() : template_cfg(), is_empty(true), is_inited(false) {}
     };
 
     //	搜索区域结构体

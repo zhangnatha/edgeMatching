@@ -844,7 +844,8 @@ bool CreateTemplate::createTemplate(
     model_id->template_cfg.create_otsu = create_otsu;
     model_id->template_cfg.min_contrast = min_contrast;
     model_id->template_cfg.max_contrast = max_contrast;
-    model_id->template_cfg.id = 1;
+    // 保留调用者预先指定的模板 ID；未指定时使用兼容性的默认 ID 1。
+    if (model_id->template_cfg.id <= 0) model_id->template_cfg.id = 1;
     model_id->template_cfg.image_width = tempMat.cols;
     model_id->template_cfg.image_height = tempMat.rows;
     // 由模板图像确定金字塔层数：-1则为自动设置层数
