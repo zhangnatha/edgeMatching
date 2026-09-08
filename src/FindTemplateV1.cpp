@@ -8,11 +8,14 @@
 
 using namespace SM_V1;
 
-#define DEBUG_SHOW 0 //用于观测算法过程运行结果显示
-#define COSTTIME_SHOW 1 //耗时统计-用于算法优化观测时间
-#define DEBUG_COARSE_SHOW 0 //最高层金字塔粗匹配整个可视化过程
+#define DEBUG_SHOW 0 // 用于观测算法过程运行结果显示
+#define COSTTIME_SHOW 1 // 耗时统计，用于算法优化观测
+#define DEBUG_COARSE_SHOW 0 // 最高层金字塔粗匹配可视化过程
 
-SearchTemplate::SearchTemplate() = default;
+SearchTemplate::SearchTemplate()
+    : thread_num_(std::max(1u, std::thread::hardware_concurrency()))
+{
+}
 SearchTemplate::~SearchTemplate() = default;
 
 // 将输入长度转换为最接近的2的幂
@@ -38,62 +41,23 @@ void SearchTemplate::_gaussianFilter(uint8_t* corrupted, uint8_t* smooth, int wi
     // 复制原始图像到平滑图像
     memcpy(smooth, corrupted, width * height * sizeof(uint8_t));
 
-    if (useSIMD)
+    // 原 AVX 分支使用字节饱和累加，并以右移 8 位代替除以 273，
+    // 与训练端的滤波结果不一致。先统一为精确标量实现，便于后续做等价 SIMD 优化。
+    (void)useSIMD;
+    for (int j = 2; j < height - 2; j++)
     {
-        // 使用 AVX2 对图像进行高斯滤波
-        for (int j = 2; j < height - 2; j++)
+        for (int i = 2; i < width - 2; i++)
         {
-            for (int i = 2; i < width - 2; i++)
+            int sum = 0;
+            int index = 0;
+            for (int m = j - 2; m < j + 3; m++)
             {
-                // 加权和初始为0
-                __m256i sum = _mm256_setzero_si256();
-                int index = 0;
-
-                for (int m = j - 2; m < j + 3; m++)
+                for (int n = i - 2; n < i + 3; n++)
                 {
-                    for (int n = i - 2; n < i + 3; n++)
-                    {
-                        // 将数据加载到AVX寄存器中
-                        __m256i pixel = _mm256_set1_epi32(corrupted[m * width + n]); // 将像素值复制到寄存器
-                        int weight = templates[index++];
-
-                        // 乘以高斯模板值并累加
-                        sum = _mm256_adds_epu8(sum, _mm256_mullo_epi32(pixel, _mm256_set1_epi32(weight)));
-                    }
+                    sum += corrupted[m * width + n] * templates[index++];
                 }
-
-                // 将结果除以273（高斯核的总和）
-                sum = _mm256_srli_epi32(sum, 8); // 除以273（通过右移8位）
-
-                // 处理结果值，防止超过255
-                sum = _mm256_min_epu8(sum, _mm256_set1_epi8(255));
-
-                // 存储结果
-                smooth[j * width + i] = (uint8_t)_mm256_extract_epi8(sum, 0);
             }
-        }
-    }
-    else
-    {
-        // 常规逐像素高斯滤波
-        for (int j = 2; j < height - 2; j++)
-        {
-            for (int i = 2; i < width - 2; i++)
-            {
-                int sum = 0;
-                int index = 0;
-                for (int m = j - 2; m < j + 3; m++)
-                {
-                    for (int n = i - 2; n < i + 3; n++)
-                    {
-                        sum += corrupted[m * width + n] * templates[index++];
-                    }
-                }
-
-                sum /= 273;
-                if (sum > 255) sum = 255;
-                smooth[j * width + i] = (uint8_t)sum;
-            }
+            smooth[j * width + i] = static_cast<uint8_t>(sum / 273);
         }
     }
 }
@@ -125,9 +89,14 @@ bool SearchTemplate::_maxOverlap(const cv::RotatedRect rect1, const cv::RotatedR
 
 std::vector<T_T::MatchResult> SearchTemplate::_filterNearCandidates(const std::vector<T_T::MatchResult>& input)
 {
+    std::vector<T_T::MatchResult> candidates = input;
+    std::sort(candidates.begin(), candidates.end(), [](const T_T::MatchResult& lhs, const T_T::MatchResult& rhs)
+    {
+        return lhs.score > rhs.score;
+    });
     std::vector<T_T::MatchResult> result;
     bool nearFlag = false;
-    for (const auto& c : input)
+    for (const auto& c : candidates)
     {
         //遍历所有已记录的结果
         nearFlag = false;
@@ -138,12 +107,7 @@ std::vector<T_T::MatchResult> SearchTemplate::_filterNearCandidates(const std::v
             {
                 //当结果位置相近时，竞选出一个结果保存
                 nearFlag = true;
-                if (c.score > r.score)
-                {
-                    //当未保存的结果更优时，进行替换
-                    r = c;
-                    break;
-                }
+                break;
             }
         }
         if (!nearFlag) { result.push_back(c); }
@@ -162,9 +126,14 @@ std::vector<T_T::MatchResult> SearchTemplate::_filterMaxOverLapCandidates(
     int model_height,
     int model_width)
 {
+    std::vector<T_T::MatchResult> candidates = input;
+    std::sort(candidates.begin(), candidates.end(), [](const T_T::MatchResult& lhs, const T_T::MatchResult& rhs)
+    {
+        return lhs.score > rhs.score;
+    });
     std::vector<T_T::MatchResult> result;
     bool overlapFlag = false;
-    for (const auto& c : input)
+    for (const auto& c : candidates)
     {
         //遍历所有已记录的结果
         overlapFlag = false;
@@ -179,12 +148,7 @@ std::vector<T_T::MatchResult> SearchTemplate::_filterMaxOverLapCandidates(
             {
                 //当结果位置相近时，竞选出一个结果保存
                 overlapFlag = true;
-                if (c.score > r.score)
-                {
-                    //当未保存的结果更优时，进行替换
-                    r = c;
-                    break;
-                }
+                break;
             }
         }
         if (!overlapFlag) { result.push_back(c); }
@@ -403,8 +367,12 @@ void SearchTemplate::_fineMatching(
     // 获取每个像素的梯度信息：dx/dy
     _getFeature(search_image, mask_image, width, height, pBufGradX_new, pBufGradY_new, true);
 
-    // 相似度计算
-    float TempScore = 0; //精匹配，取最大分数值
+    // 每个角度独立记录最优结果，最后一次归约，避免逐像素全局锁竞争。
+    const int angle_count = static_cast<int>(shape_info_vec->shape_angle.size());
+    std::vector<float> best_scores(angle_count, 0.0f);
+    std::vector<int> best_x(angle_count, 0);
+    std::vector<int> best_y(angle_count, 0);
+    std::vector<double> best_visible(angle_count, 0.0);
 
     int limit_angle; // 0-左限位越界 1-左右限均不越界 2-右限位越界
     // start_angle 左限位越界
@@ -428,7 +396,7 @@ void SearchTemplate::_fineMatching(
     }
     int angle_range = std::abs(stop_angle_ - start_angle_);
 #pragma omp parallel for schedule(dynamic) // 并行化角度循环
-    for (int k = 0; k < shape_info_vec->shape_angle.size(); k++) //[0]角度的个数
+    for (int k = 0; k < angle_count; k++) //[0]角度的个数
     {
         float resultscore = 0;
 
@@ -475,10 +443,10 @@ void SearchTemplate::_fineMatching(
             max_dy = std::max(max_dy, dy);
         }
 
-        int adj_start_X = std::max(search_region.start_X, -min_dx);
-        int adj_end_X = std::min(search_region.end_X, width - 1 - max_dx);
-        int adj_start_Y = std::max(search_region.start_Y, -min_dy);
-        int adj_end_Y = std::min(search_region.end_Y, height - 1 - max_dy);
+        int adj_start_X = std::max(0, search_region.start_X);
+        int adj_end_X = std::min(width, search_region.end_X);
+        int adj_start_Y = std::max(0, search_region.start_Y);
+        int adj_end_Y = std::min(height, search_region.end_Y);
 
         // 准备模板点的连续数组，便于SIMD
         std::vector<int> rel_offsets(point_size);
@@ -491,11 +459,11 @@ void SearchTemplate::_fineMatching(
 
         int TempPiontX = 0;
         int TempPiontY = 0;
+        double bestVisibleRatio = 0.0;
 
         float anMinScore = min_score - 1;
         float NormMinScore = min_score / point_size;
         float NormGreediness = ((1 - greediness * min_score) / (1 - greediness)) / point_size; //计算贪婪数
-#pragma omp parallel for collapse(2) schedule(dynamic) // 并行化搜索区域循环
         for (int i = adj_start_X; i < adj_end_X; i += ijstep)
         {
             for (int j = adj_start_Y; j < adj_end_Y; j += ijstep)
@@ -503,6 +471,7 @@ void SearchTemplate::_fineMatching(
                 float PartialSum = 0; //初始化相似性度量分数
                 int SumOfCoords = 0;
                 float PartialScore = 0;
+                int visibleCount = 0;
 
                 int base = j * width + i;
 
@@ -520,7 +489,11 @@ void SearchTemplate::_fineMatching(
                             offset = [j * width + i] + [shape_angle->shape_point[m].y * width + shape_angle->shape_point[m].x]
                             offset = base + rel_offsets[m]
                         */
-                        int offSet = base + rel_offsets[m];
+                        const int curX = i + static_cast<int>(shape_angle->shape_point[m].x);
+                        const int curY = j + static_cast<int>(shape_angle->shape_point[m].y);
+                        if (curX < 0 || curX >= width || curY < 0 || curY >= height) continue;
+                        ++visibleCount;
+                        int offSet = curY * width + curX;
                         float iTx = tmpl_dx[m]; //模板X方向的梯度
                         float iTy = tmpl_dy[m]; //模板Y方向的梯度
                         float iSx = pBufGradX_new[offSet]; //从搜索图像中获取对应的X梯度
@@ -531,13 +504,14 @@ void SearchTemplate::_fineMatching(
                         {
                             PartialSum += ((iSx * iTx) + (iSy * iTy))/** (iTm * iSm)*/; // 计算相似度
                         }
-                        SumOfCoords = m + 1;
+                        SumOfCoords = visibleCount;
                         PartialScore = PartialSum / SumOfCoords; // 归一化
                         //===================================================================================
                         // 终止策略
                         // Sm<MIN((Smin-1+(1-g*Smin)/(1-g)*(m/n)),(Smin*m/n))
                         //===================================================================================
-                        if (PartialScore < (MIN(anMinScore + NormGreediness * SumOfCoords, NormMinScore * SumOfCoords)))
+                        if (min_visible_ratio_ >= 1.0 &&
+                            PartialScore < (MIN(anMinScore + NormGreediness * SumOfCoords, NormMinScore * SumOfCoords)))
                             break;
                     } //遍历完毕<特征点数>
                 } else {
@@ -604,32 +578,38 @@ void SearchTemplate::_fineMatching(
                     }// 遍历完毕<特征点数>
                 }// <SIMD/普通模式>选择结束
 early_exit:
-#pragma omp critical // 保护共享资源 resultscore 的更新
+                const double visibleRatio = point_size > 0
+                                                ? static_cast<double>(visibleCount) / point_size : 0.0;
+                // 每个角度循环只由一个工作线程处理，局部更新无需加锁。
+                if (visibleRatio >= min_visible_ratio_ && PartialScore > resultscore)
                 {
-                    //每个角度下取分数最大的那个匹配结果
-                    if (PartialScore > resultscore)
-                    {
-                        resultscore = PartialScore; // 匹配分数
-                        TempPiontX = i; // 坐标X结果值
-                        TempPiontY = j; //  坐标Y结果值
-                    }
+                    resultscore = PartialScore; // 匹配分数
+                    TempPiontX = i; // 坐标X结果值
+                    TempPiontY = j; //  坐标Y结果值
+                    bestVisibleRatio = visibleRatio;
                 }
             } // 遍历完毕<搜索区域y>
         } // 遍历完毕<搜索区域x>
 
-#pragma omp critical // 保护共享资源 result_list 的更新
-        {
-            //所有角度下取分数最大的那个匹配结果
-            if (resultscore > TempScore) //精匹配结果更新与记录
-            {
-                TempScore = resultscore;
-                result_list->score = TempScore;
-                result_list->pose.x = TempPiontX;
-                result_list->pose.y = TempPiontY;
-                result_list->pose.angle = shape_angle->angle;
-            }
-        }
+        best_scores[k] = resultscore;
+        best_x[k] = TempPiontX;
+        best_y[k] = TempPiontY;
+        best_visible[k] = bestVisibleRatio;
     } // 遍历完毕<角度数量>
+
+    float best_score = 0.0f;
+    for (int k = 0; k < angle_count; ++k)
+    {
+        if (best_scores[k] > best_score)
+        {
+            best_score = best_scores[k];
+            result_list->score = best_score;
+            result_list->pose.x = best_x[k];
+            result_list->pose.y = best_y[k];
+            result_list->pose.angle = shape_info_vec->shape_angle[k]->angle;
+            result_list->visible_ratio = best_visible[k];
+        }
+    }
 }
 
 // 待测图像粗匹配：特征提取和相似性度量
@@ -689,20 +669,21 @@ void SearchTemplate::_coarseMatching(
         // 更新搜索区域(根据不同角度模板进行搜索)
         // 不同角度下模板特征的外包络框大小不一致
         // 在待测图像上，遍历搜索时，防止目标贴边压不上的可能
-        int model_cx = -shape_info_vec->shape_angle[k]->bbx.lt_x;
-        int model_cy = -shape_info_vec->shape_angle[k]->bbx.lt_y;
-        search_region.start_X = model_cx + left - 1;
-        search_region.start_Y = model_cy + top - 1;
-        search_region.end_X = width - search_region.start_X + 1;
-        search_region.end_Y = height - search_region.start_Y + 1;
+        const int search_start_x = std::max(left, search_region.start_X);
+        const int search_start_y = std::max(top, search_region.start_Y);
+        const int search_end_x = std::min(width - 1, search_region.end_X > 0
+                                                         ? search_region.end_X : width - 1);
+        const int search_end_y = std::min(height - 1, search_region.end_Y > 0
+                                                          ? search_region.end_Y : height - 1);
 
-        for (int i = search_region.start_X; i < search_region.end_X; i++) //搜索范围x
+        for (int i = search_start_x; i <= search_end_x; i++) //搜索范围x
         {
-            for (int j = search_region.start_Y; j < search_region.end_Y; j++) //搜索范围y
+            for (int j = search_start_y; j <= search_end_y; j++) //搜索范围y
             {
                 float PartialScore = 0;
                 float PartialSum = 0; //初始化相似性度量分数
                 int SumOfCoords = 0;
+                int visibleCount = 0;
 
                 for (int m = 0; m < point_size; m++) //某角度下的特征点数量
                 {
@@ -721,6 +702,7 @@ void SearchTemplate::_coarseMatching(
                     {
                         continue; //如果模板超出搜索图像边界范围，跳出继续，加速
                     }
+                    ++visibleCount;
                     iTx = shape_angle->shape_point[m].edge_dx; //模板X方向的梯度
                     iTy = shape_angle->shape_point[m].edge_dy; //模板Y方向的梯度
 
@@ -736,23 +718,25 @@ void SearchTemplate::_coarseMatching(
                         //===================================================================================
                         PartialSum += ((iSx * iTx) + (iSy * iTy)) /* * (iSm * iTm)*/; // 计算相似度
                     }
-                    SumOfCoords = m + 1;
+                    SumOfCoords = visibleCount;
                     PartialScore = PartialSum / SumOfCoords; // 归一化
 
                     //===================================================================================
                     // 终止策略
                     //===================================================================================
-                    if (PartialScore < (MIN(anMinScore + NormGreediness * SumOfCoords, NormMinScore * SumOfCoords)))
+                    if (min_visible_ratio_ >= 1.0 &&
+                        PartialScore < (MIN(anMinScore + NormGreediness * SumOfCoords, NormMinScore * SumOfCoords)))
                     {
                         break;
                     }
                 }
 
-                if (PartialScore > min_score)
+                const double visibleRatio = point_size > 0
+                                                ? static_cast<double>(visibleCount) / point_size : 0.0;
+                if (visibleRatio >= min_visible_ratio_ && PartialScore > min_score)
                 {
-                    locker.lock();
-                    resultsPerDeg.push_back({T_T::Pose2d(i, j, shape_angle->angle), PartialScore});
-                    locker.unlock();
+                    resultsPerDeg.push_back(T_T::MatchResult(
+                        T_T::Pose2d(i, j, shape_angle->angle), PartialScore, 1.0, -1, visibleRatio));
                 } // if 语句:大于最小得分值
 #if DEBUG_COARSE_SHOW
                 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~绘制匹配过程~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -778,11 +762,10 @@ void SearchTemplate::_coarseMatching(
         resultsPerDegCandidates = _filterNearCandidates(resultsPerDeg);
 
         //对于每一个角度的模板，匹配结束，将结果保存至totalResultsTemp中
-        for (const auto& ri : resultsPerDegCandidates)
         {
-            locker.lock();
-            totalResultsTemp.push_back(ri);
-            locker.unlock();
+            std::lock_guard<std::mutex> guard(locker);
+            totalResultsTemp.insert(
+                totalResultsTemp.end(), resultsPerDegCandidates.begin(), resultsPerDegCandidates.end());
         }
     } // 角度k的for循环 [OMP]
 
@@ -798,7 +781,9 @@ void SearchTemplate::_coarseMatching(
     //~~~~~~~~~~~~~~< 原则:重叠者，粗匹配结果中取分数最大的 >~~~~~
     //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    resultsfilter = _filterMaxOverLapCandidates(totalResultsTemp1, max_overlap, model_height, model_width);
+    // 粗层的坐标和角度尚有量化误差，此时做旋转框 NMS 会将真实候选与局部假峰一并删除。
+    // 只做近邻峰值合并，重叠率 NMS 延后到 L0 精匹配完成后执行。
+    resultsfilter = std::move(totalResultsTemp1);
 
     //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     //~~~~~~~~~~~~~< 对粗匹配结果-分数从高到低排序竞选 >~~~~~~~~~~~~
@@ -837,7 +822,7 @@ void SearchTemplate::_coarseMatching(
 }
 
 
-// 1.2 function:待测图像粗匹配到精匹配策略
+// 1.2 函数：待测图像从粗匹配到精匹配的策略
 bool SearchTemplate::_coarse2FineMatching(
     cv::Mat p_image_py,
     cv::Mat mask_image,
@@ -866,44 +851,12 @@ bool SearchTemplate::_coarse2FineMatching(
 
     int Row1, Col1, Row2, Col2, ResultPiontX, ResultPiontY, ReferPointX, ReferPointY;
 
-    T_T::ShapeInfo::Ptr pInfoPy = nullptr;
-
-    //角度步长相关
-    int OffSet = 1 << py_levels;
-    // 取出相应金字塔层数的模板特征信息
-    switch (py_levels)
-    {
-    case 0:
-        pInfoPy = model_id->templates[0];
-        break;
-    case 1:
-        pInfoPy = model_id->templates[1];
-        break;
-    case 2:
-        pInfoPy = model_id->templates[2];
-        break;
-    case 3:
-        pInfoPy = model_id->templates[3];
-        break;
-    case 4:
-        pInfoPy = model_id->templates[4];
-        break;
-    case 5:
-        pInfoPy = model_id->templates[5];
-        break;
-    case 6:
-        pInfoPy = model_id->templates[6];
-        break;
-    case 7:
-        pInfoPy = model_id->templates[7];
-        break;
-    default:
-        break;
-    } // END:获取模板制作的每层金字塔图像的模板特征信息model_id/templates
+    if (py_levels < 0 || py_levels >= static_cast<int>(model_id->templates.size())) { return false; }
+    T_T::ShapeInfo::Ptr pInfoPy = model_id->templates[py_levels];
 
     // 在金字塔层图像中搜索模板
-    int WidthPy = width >> py_levels;
-    int HeightPy = height >> py_levels;
+    int WidthPy = p_image_py.cols;
+    int HeightPy = p_image_py.rows;
 
     // 金字塔高层图往低层搜索策略
     // 因此，此层的参考点应该是上一层匹配的中心点的2倍（金字塔采样比率为1/2）
@@ -911,15 +864,22 @@ bool SearchTemplate::_coarse2FineMatching(
     ResultPiontY = ((MatchPiontY * 2) < 0) ? 0 : (MatchPiontY * 2);
 
     // 计算每层模板中心点的位置
-    ReferPointX = (model_id->template_cfg.image_width >> py_levels);
-    ReferPointY = (model_id->template_cfg.image_height >> py_levels);
+    const int level_scale = 1 << py_levels;
+    const double level_width = static_cast<double>(model_id->template_cfg.image_width) / level_scale;
+    const double level_height = static_cast<double>(model_id->template_cfg.image_height) / level_scale;
+    const double angle_rad = MatchAngle * CV_PI / 180.0;
+    ReferPointX = static_cast<int>(std::ceil(
+        (std::abs(std::cos(angle_rad)) * level_width + std::abs(std::sin(angle_rad)) * level_height) * 0.5));
+    ReferPointY = static_cast<int>(std::ceil(
+        (std::abs(std::sin(angle_rad)) * level_width + std::abs(std::cos(angle_rad)) * level_height) * 0.5));
 
 
-    // 根据以上求解裁切框的左上、右下点坐标
-    Row1 = ((ResultPiontX - ReferPointX - 2) < 0) ? 0 : (ResultPiontX - ReferPointX - 2);
-    Col1 = ((ResultPiontY - ReferPointY - 2) < 0) ? 0 : (ResultPiontY - ReferPointY - 2);
-    Row2 = ((ResultPiontX + ReferPointX + 2) > WidthPy) ? WidthPy : (ResultPiontX + ReferPointX + 2);
-    Col2 = ((ResultPiontY + ReferPointY + 2) > HeightPy) ? HeightPy : (ResultPiontY + ReferPointY + 2);
+    constexpr int refinement_radius = 6;
+    // 裁切范围覆盖完整模板及对称精匹配搜索半径。
+    Row1 = std::max(0, ResultPiontX - ReferPointX - refinement_radius);
+    Col1 = std::max(0, ResultPiontY - ReferPointY - refinement_radius);
+    Row2 = std::min(WidthPy, ResultPiontX + ReferPointX + refinement_radius + 1);
+    Col2 = std::min(HeightPy, ResultPiontY + ReferPointY + refinement_radius + 1);
 
     // 裁切框的大小
     cropImgW = abs(Row2 - Row1);
@@ -951,11 +911,13 @@ bool SearchTemplate::_coarse2FineMatching(
     //===================================================================================
     //------------------------<  上层至下层的搜索范围以及搜索角度更新  >-----------------------
     //===================================================================================
-    // 左上、右下搜索区域各偏置5个像素
-    SearchRegion.start_X = ((ResultPiontX - Row1 - 5) < 0) ? 0 : (ResultPiontX - Row1 - 5);
-    SearchRegion.start_Y = ((ResultPiontY - Col1 - 5) < 0) ? 0 : (ResultPiontY - Col1 - 5);
-    SearchRegion.end_X = SearchRegion.start_X + 10;
-    SearchRegion.end_Y = SearchRegion.start_Y + 10;
+    // 以上一层候选的2倍坐标为中心，使用对称且闭区间等价的局部搜索窗。
+    const int predicted_x = ResultPiontX - Row1;
+    const int predicted_y = ResultPiontY - Col1;
+    SearchRegion.start_X = std::max(0, predicted_x - refinement_radius);
+    SearchRegion.start_Y = std::max(0, predicted_y - refinement_radius);
+    SearchRegion.end_X = std::min(cropImgW, predicted_x + refinement_radius + 1);
+    SearchRegion.end_Y = std::min(cropImgH, predicted_y + refinement_radius + 1);
     // 搜索角度根据上层匹配角度逆时针、顺时针各偏移4度
     SearchRegion.start_angle = (MatchAngle - 4);
     SearchRegion.stop_angle = (MatchAngle + 4);
@@ -1019,14 +981,33 @@ bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image,
                     float greediness, bool sort_by_y,
                     std::vector<T_T::MatchResult>& result_list)
 {
-    ROI roi; // 默认空
-    return searchTemplate(image, s_mask_image, roi, model_id, angle_start, angle_extent,
+    return searchTemplate(image, s_mask_image, model_id, angle_start, angle_extent,
                           min_score, num_matches, max_overlap, num_levels, greediness,
-                          sort_by_y, result_list);
+                          sort_by_y, T_T::ScaleSearchCfg(), result_list);
 }
 
-// 模板匹配程序入口程序
 bool SearchTemplate::searchTemplate(
+    cv::Mat image,
+    cv::Mat s_mask_image,
+    ROI roi,
+    T_T::Template::Ptr model_id,
+    int angle_start,
+    int angle_extent,
+    float min_score,
+    int num_matches,
+    float max_overlap,
+    int num_levels,
+    float greediness,
+    bool sort_by_y,
+    std::vector<T_T::MatchResult>& result_list)
+{
+    return searchTemplate(image, s_mask_image, roi, model_id, angle_start, angle_extent,
+                          min_score, num_matches, max_overlap, num_levels, greediness,
+                          sort_by_y, T_T::ScaleSearchCfg(), result_list);
+}
+
+// 单尺度匹配内核，由公开重载统一调用。
+bool SearchTemplate::_searchTemplateSingleScale(
     cv::Mat image,
     cv::Mat s_mask_image,
     ROI roi,
@@ -1045,8 +1026,11 @@ bool SearchTemplate::searchTemplate(
     auto start_prepare = std::chrono::high_resolution_clock::now();
 #endif
     if(!roi.empty())
-        // 根据ROI裁出子图
+    {
+        // 图像与掩模必须在同一 ROI 坐标系中裁切。
         roi.crop(image, image);
+        if (!s_mask_image.empty()) roi.crop(s_mask_image, s_mask_image);
+    }
 
     // 补充掩模图像，防止掩模图像为空
     if(s_mask_image.empty())
@@ -1058,8 +1042,8 @@ bool SearchTemplate::searchTemplate(
     thread_num_ = std::thread::hardware_concurrency();
 
     cv::Mat Image_c, smaskimage_c;
-    cv::Mat Image = image.clone();
-    cv::Mat smaskimage = s_mask_image.clone();
+    cv::Mat Image = image;
+    cv::Mat smaskimage = s_mask_image;
     if (Image.channels() == 3) { cv::cvtColor(Image, Image, cv::COLOR_BGR2GRAY); }
     if (smaskimage.channels() == 3) { cv::cvtColor(smaskimage, smaskimage, cv::COLOR_BGR2GRAY); }
 
@@ -1081,10 +1065,11 @@ bool SearchTemplate::searchTemplate(
         int top = 0, bottom = 0, left = 0, right = 0;
 
         // 待测图长、宽不为16的倍数：图像的长宽边进行扩展
-        if ((Image.cols % 16 != 0) && (Image.rows % 16 != 0))
+        const int pyramid_alignment = 1 << num_levels;
+        if ((Image.cols % pyramid_alignment != 0) || (Image.rows % pyramid_alignment != 0))
         {
-            int BorderedWidth  = _convertLength(Image.cols);
-            int BorderedHeight = _convertLength(Image.rows);
+            int BorderedWidth = ((Image.cols + pyramid_alignment - 1) / pyramid_alignment) * pyramid_alignment;
+            int BorderedHeight = ((Image.rows + pyramid_alignment - 1) / pyramid_alignment) * pyramid_alignment;
             int y2Offset = BorderedHeight - Image.rows;
             int x2Offset = BorderedWidth  - Image.cols;
 
@@ -1095,7 +1080,7 @@ bool SearchTemplate::searchTemplate(
 
             cv::copyMakeBorder(Image, ImgBordered, top, bottom, left, right, cv::BORDER_REPLICATE);
             cv::copyMakeBorder(smaskimage, MaskBordered, top, bottom, left, right, cv::BORDER_REPLICATE);
-        } // END:对输入的待测图像、掩模图像的padding操作，按长短边的2^n(n>=4)来扩
+        } // 结束：对输入图像和掩模的填充操作，按长短边的 2^n（n>=4）扩展
         else
         {
             ImgBordered = Image;
@@ -1142,12 +1127,15 @@ bool SearchTemplate::searchTemplate(
 #if COSTTIME_SHOW
         auto                                      end_prepare      = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double, std::milli> duration_prepare = end_prepare - start_prepare;
-        std::cout << "前处理耗时: " << duration_prepare.count() << " ms." << std::endl;
+        std::cout << "Preprocessing time: " << duration_prepare.count() << " ms." << std::endl;
 #endif
 
 #if COSTTIME_SHOW
         auto start_coarse = std::chrono::high_resolution_clock::now();
 #endif
+        // 顶层受下采样量化影响更大：使用略低的候选阈值保证召回，
+        // 最终判定仍由 L0 精匹配使用用户指定的 min_score 完成。
+        const float coarse_min_score = std::max(0.4f, min_score - 0.3f);
         // 金字塔最高层粗匹配（全图搜索）
         _coarseMatching(
             pImage,
@@ -1159,7 +1147,7 @@ bool SearchTemplate::searchTemplate(
             modelheight,
             Left,
             Top,
-            min_score,
+            coarse_min_score,
             greediness,
             max_overlap,
             SearchRegion,
@@ -1167,11 +1155,11 @@ bool SearchTemplate::searchTemplate(
 #if COSTTIME_SHOW
         auto                                      end_coarse      = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double, std::milli> duration_coarse = end_coarse - start_coarse;
-        std::cout << "粗匹配耗时: " << duration_coarse.count() << " ms." << std::endl;
+        std::cout << "Coarse matching time: " << duration_coarse.count() << " ms." << std::endl;
 #endif
 
 #if DEBUG_SHOW
-        printf("粗匹配结果数量: %ld\n", ResultListPyRude.size());
+        printf("Coarse matching result count: %ld\n", ResultListPyRude.size());
         cv::Mat pImageBGR;
         cv::cvtColor(pImage, pImageBGR, cv::COLOR_GRAY2BGR);
         cv::putText(
@@ -1258,7 +1246,7 @@ bool SearchTemplate::searchTemplate(
                 {
                     break; //高层至底层匹配的过程中，分数低于设定值则停止对这个粗匹配的向下寻找真理（直到第0层）
                 }
-            } // END:非金字塔最高层的每一层金字塔精匹配
+            } // 结束：非金字塔最高层的逐层精匹配
 
             if (ResultListLow.score > static_cast<double>(min_score))
             {
@@ -1275,11 +1263,11 @@ bool SearchTemplate::searchTemplate(
                         locker.unlock();
                     }
             }
-        } // END:遍历完最高层金字塔匹配出的所有可能结果 [OMP]
+        } // 结束：遍历最高层金字塔的所有候选结果 [OMP]
 #if COSTTIME_SHOW
         auto                                      end_fine      = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double, std::milli> duration_fine = end_fine - start_fine;
-        std::cout << "精匹配耗时: " << duration_fine.count() << " ms." << std::endl;
+        std::cout << "Fine matching time: " << duration_fine.count() << " ms." << std::endl;
 #endif
 
 #if COSTTIME_SHOW
@@ -1361,15 +1349,236 @@ bool SearchTemplate::searchTemplate(
 #if COSTTIME_SHOW
         auto                                      end_final      = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double, std::milli> duration_final = end_final - start_final;
-        std::cout << "后处理耗时: " << duration_final.count() << " ms." << std::endl;
+        std::cout << "Postprocessing time: " << duration_final.count() << " ms." << std::endl;
 #endif
 
         return true;
-    } // scope
+} // 作用域结束
     else
     {
         return false;
     }
+}
+
+namespace
+{
+double rotatedIoU(const T_T::MatchResult& a, const T_T::MatchResult& b,
+                  const T_T::Template& model)
+{
+    cv::RotatedRect ra(cv::Point2f(a.pose.x, a.pose.y),
+                       cv::Size2f(model.template_cfg.image_width * a.scale,
+                                  model.template_cfg.image_height * a.scale),
+                       -a.pose.angle);
+    cv::RotatedRect rb(cv::Point2f(b.pose.x, b.pose.y),
+                       cv::Size2f(model.template_cfg.image_width * b.scale,
+                                  model.template_cfg.image_height * b.scale),
+                       -b.pose.angle);
+    std::vector<cv::Point2f> intersection;
+    if (cv::rotatedRectangleIntersection(ra, rb, intersection) == cv::INTERSECT_NONE ||
+        intersection.empty()) return 0.0;
+    const double inter = std::abs(cv::contourArea(intersection));
+    const double uni = ra.size.area() + rb.size.area() - inter;
+    return uni > 0.0 ? inter / uni : 0.0;
+}
+
+bool validScaleCfg(const T_T::ScaleSearchCfg& cfg)
+{
+    return std::isfinite(cfg.scale_min) && std::isfinite(cfg.scale_max) &&
+           std::isfinite(cfg.scale_step) && cfg.scale_min > 0.0 &&
+           cfg.scale_max >= cfg.scale_min && cfg.scale_step > 0.0 &&
+           cfg.min_visible_ratio > 0.0 && cfg.min_visible_ratio <= 1.0;
+}
+}
+
+bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image,
+                                    T_T::Template::Ptr model_id,
+                                    int angle_start, int angle_extent,
+                                    float min_score, int num_matches,
+                                    float max_overlap, int num_levels,
+                                    float greediness, bool sort_by_y,
+                                    const T_T::ScaleSearchCfg& scale_cfg,
+                                    std::vector<T_T::MatchResult>& result_list)
+{
+    return searchTemplate(image, s_mask_image, ROI(), model_id, angle_start, angle_extent,
+                          min_score, num_matches, max_overlap, num_levels, greediness,
+                          sort_by_y, scale_cfg, result_list);
+}
+
+bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi,
+                                    T_T::Template::Ptr model_id,
+                                    int angle_start, int angle_extent,
+                                    float min_score, int num_matches,
+                                    float max_overlap, int num_levels,
+                                    float greediness, bool sort_by_y,
+                                    const T_T::ScaleSearchCfg& scale_cfg,
+                                    std::vector<T_T::MatchResult>& result_list)
+{
+    if (image.empty() || !model_id || !validScaleCfg(scale_cfg)) return false;
+    std::lock_guard<std::mutex> searchGuard(search_mutex_);
+
+    cv::Mat workImage = image;
+    cv::Mat workMask = s_mask_image;
+    if (!roi.empty())
+    {
+        if (!roi.crop(image, workImage)) return false;
+        if (!s_mask_image.empty() && !roi.crop(s_mask_image, workMask)) return false;
+    }
+
+    std::vector<T_T::MatchResult> all;
+    const double oldVisibleRatio = min_visible_ratio_;
+    min_visible_ratio_ = scale_cfg.min_visible_ratio;
+    const double epsilon = scale_cfg.scale_step * 1e-6;
+    for (double scale = scale_cfg.scale_min; scale <= scale_cfg.scale_max + epsilon;
+         scale += scale_cfg.scale_step)
+    {
+        cv::Mat scaledImage, scaledMask;
+        const double inverseScale = 1.0 / scale;
+        cv::resize(workImage, scaledImage, cv::Size(), inverseScale, inverseScale,
+                   inverseScale < 1.0 ? cv::INTER_AREA : cv::INTER_LINEAR);
+        if (!workMask.empty())
+            cv::resize(workMask, scaledMask, scaledImage.size(), 0.0, 0.0, cv::INTER_NEAREST);
+
+        std::vector<T_T::MatchResult> perScale;
+        if (!_searchTemplateSingleScale(scaledImage, scaledMask, ROI(), model_id,
+                                        angle_start, angle_extent, min_score, -1,
+                                        max_overlap, num_levels, greediness,
+                                        sort_by_y, perScale)) continue;
+        for (auto& result : perScale)
+        {
+            result.pose.x *= scale;
+            result.pose.y *= scale;
+            result.scale = scale;
+            result.template_id = model_id->template_cfg.id;
+            if (!roi.empty())
+            {
+                double x, y, angle;
+                if (roi.toImageCoord(result.pose.x, result.pose.y, result.pose.angle,
+                                     x, y, angle))
+                {
+                    result.pose.x = x;
+                    result.pose.y = y;
+                    result.pose.angle = angle;
+                }
+            }
+            all.push_back(result);
+        }
+    }
+    min_visible_ratio_ = oldVisibleRatio;
+
+    std::sort(all.begin(), all.end(), [](const T_T::MatchResult& a, const T_T::MatchResult& b)
+    {
+        return a.score > b.score;
+    });
+    std::vector<T_T::MatchResult> kept;
+    for (const auto& candidate : all)
+    {
+        bool suppressed = false;
+        for (const auto& accepted : kept)
+        {
+            if (rotatedIoU(candidate, accepted, *model_id) > max_overlap)
+            {
+                suppressed = true;
+                break;
+            }
+        }
+        if (!suppressed) kept.push_back(candidate);
+    }
+    if (num_matches >= 0 && kept.size() > static_cast<size_t>(num_matches))
+        kept.resize(num_matches);
+    if (sort_by_y)
+        std::sort(kept.begin(), kept.end(), [](const T_T::MatchResult& a, const T_T::MatchResult& b)
+        { return a.pose.y < b.pose.y; });
+    else
+        std::sort(kept.begin(), kept.end(), [](const T_T::MatchResult& a, const T_T::MatchResult& b)
+        { return a.pose.x < b.pose.x; });
+    result_list.insert(result_list.end(), kept.begin(), kept.end());
+    return true;
+}
+
+bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image,
+                                    const std::vector<T_T::Template::Ptr>& models,
+                                    int angle_start, int angle_extent,
+                                    float min_score, int num_matches,
+                                    float max_overlap, int num_levels,
+                                    float greediness, bool sort_by_y,
+                                    const T_T::ScaleSearchCfg& scale_cfg,
+                                    std::vector<T_T::MatchResult>& result_list)
+{
+    return searchTemplate(image, s_mask_image, ROI(), models, angle_start, angle_extent,
+                          min_score, num_matches, max_overlap, num_levels, greediness,
+                          sort_by_y, scale_cfg, result_list);
+}
+
+bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi,
+                                    const std::vector<T_T::Template::Ptr>& models,
+                                    int angle_start, int angle_extent,
+                                    float min_score, int num_matches,
+                                    float max_overlap, int num_levels,
+                                    float greediness, bool sort_by_y,
+                                    const T_T::ScaleSearchCfg& scale_cfg,
+                                    std::vector<T_T::MatchResult>& result_list)
+{
+    if (models.empty()) return false;
+    std::vector<T_T::MatchResult> merged;
+    for (const auto& model : models)
+    {
+        if (!model) continue;
+        std::vector<T_T::MatchResult> current;
+        searchTemplate(image, s_mask_image, roi, model, angle_start, angle_extent,
+                       min_score, -1, max_overlap, num_levels, greediness,
+                       sort_by_y, scale_cfg, current);
+        merged.insert(merged.end(), current.begin(), current.end());
+    }
+    std::sort(merged.begin(), merged.end(), [](const T_T::MatchResult& a,
+                                               const T_T::MatchResult& b)
+    { return a.score > b.score; });
+    // 跨模板合并 NMS：重叠物体仅保留全局得分最高的解。
+    std::vector<T_T::MatchResult> kept;
+    for (const auto& candidate : merged)
+    {
+        const T_T::Template::Ptr* candidateModel = nullptr;
+        for (const auto& model : models)
+            if (model && model->template_cfg.id == candidate.template_id)
+            { candidateModel = &model; break; }
+        if (!candidateModel) continue;
+        cv::RotatedRect candidateRect(
+            cv::Point2f(candidate.pose.x, candidate.pose.y),
+            cv::Size2f((*candidateModel)->template_cfg.image_width * candidate.scale,
+                       (*candidateModel)->template_cfg.image_height * candidate.scale),
+            -candidate.pose.angle);
+        bool suppressed = false;
+        for (const auto& accepted : kept)
+        {
+            const T_T::Template::Ptr* acceptedModel = nullptr;
+            for (const auto& model : models)
+                if (model && model->template_cfg.id == accepted.template_id)
+                { acceptedModel = &model; break; }
+            if (!acceptedModel) continue;
+            cv::RotatedRect acceptedRect(
+                cv::Point2f(accepted.pose.x, accepted.pose.y),
+                cv::Size2f((*acceptedModel)->template_cfg.image_width * accepted.scale,
+                           (*acceptedModel)->template_cfg.image_height * accepted.scale),
+                -accepted.pose.angle);
+            std::vector<cv::Point2f> intersection;
+            if (cv::rotatedRectangleIntersection(candidateRect, acceptedRect, intersection) ==
+                    cv::INTERSECT_NONE || intersection.empty()) continue;
+            const double inter = std::abs(cv::contourArea(intersection));
+            const double uni = candidateRect.size.area() + acceptedRect.size.area() - inter;
+            if (uni > 0.0 && inter / uni > max_overlap)
+            { suppressed = true; break; }
+        }
+        if (!suppressed) kept.push_back(candidate);
+    }
+    if (num_matches >= 0 && kept.size() > static_cast<size_t>(num_matches))
+        kept.resize(num_matches);
+    if (sort_by_y)
+        std::sort(kept.begin(), kept.end(), [](const T_T::MatchResult& a, const T_T::MatchResult& b)
+        { return a.pose.y < b.pose.y; });
+    else
+        std::sort(kept.begin(), kept.end(), [](const T_T::MatchResult& a, const T_T::MatchResult& b)
+        { return a.pose.x < b.pose.x; });
+    result_list.insert(result_list.end(), kept.begin(), kept.end());
+    return true;
 }
 
 //初始化各层金字塔的模板信息
@@ -1478,7 +1687,7 @@ T_T::Template::Ptr SearchTemplate::loadModelFileFromJson(std::string path)
     cv::FileStorage fs(path, cv::FileStorage::READ);
     if (!fs.isOpened())
     {
-        std::cout << "load model failed!" << std::endl;
+        std::cout << "Failed to load model." << std::endl;
         return nullptr;
     }
 
@@ -1546,7 +1755,7 @@ T_T::Template::Ptr SearchTemplate::loadModelFileFromJson(std::string path)
     }
 
     fs.release(); // 关闭文件流
-    std::cout << "加载模板数据成功[Json]!" << std::endl;
+    std::cout << "Template data loaded successfully [JSON]." << std::endl;
 
     // ↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓ 补全模板数据（旋转特征点）↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓
     if (temp != nullptr)
@@ -1614,13 +1823,32 @@ T_T::Template::Ptr SearchTemplate::loadModelFileFromJson(std::string path)
                     model_id_cp->templates[index]->shape_angle[i]->shape_point[j].edge_dy = -DY;
                 }
             }
+
+            // JSON 只保存 0° 特征；旋转重建后必须同步重建每个角度的边界框。
+            // 粗匹配依赖该边界框确定合法搜索区域。
+            for (const auto& shape_angle : model_id_cp->templates[index]->shape_angle)
+            {
+                if (shape_angle->shape_point.empty()) { continue; }
+                int min_x = static_cast<int>(shape_angle->shape_point[0].x);
+                int max_x = min_x;
+                int min_y = static_cast<int>(shape_angle->shape_point[0].y);
+                int max_y = min_y;
+                for (const auto& point : shape_angle->shape_point)
+                {
+                    min_x = std::min(min_x, static_cast<int>(point.x));
+                    max_x = std::max(max_x, static_cast<int>(point.x));
+                    min_y = std::min(min_y, static_cast<int>(point.y));
+                    max_y = std::max(max_y, static_cast<int>(point.y));
+                }
+                shape_angle->bbx = {min_x, min_y, max_x, max_y};
+            }
         }
 
         // 将更新后的模型数据返回
         temp.reset();
         temp = model_id_cp;
         model_id_cp.reset();
-        std::cout << "补全模板数据成功[Json]!" << std::endl;
+        std::cout << "Template angle data expanded successfully [JSON]." << std::endl;
     }
     // ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
     return temp;
@@ -1633,7 +1861,7 @@ T_T::Template::Ptr SearchTemplate::loadModelFileFromBinary(std::string path)
     std::ifstream ifs(path, std::ios::binary);
     if (!ifs.is_open())
     {
-        std::cerr << "无法打开文件 " << path << " 来加载数据!" << std::endl;
+        std::cerr << "Failed to open file for loading: " << path << std::endl;
         return nullptr;
     }
 
@@ -1695,7 +1923,7 @@ T_T::Template::Ptr SearchTemplate::loadModelFileFromBinary(std::string path)
     }
 
     ifs.close(); // 关闭文件流
-    std::cout << "加载模板数据成功[Binary]!" << std::endl;
+    std::cout << "Template data loaded successfully [binary]." << std::endl;
 
     // ↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓ 补全模板数据（旋转特征点）↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓
     if (temp != nullptr)
@@ -1771,7 +1999,7 @@ T_T::Template::Ptr SearchTemplate::loadModelFileFromBinary(std::string path)
         temp.reset();
         temp = model_id_cp;
         model_id_cp.reset();
-        std::cout << "补全模板数据成功[Binary]!" << std::endl;
+        std::cout << "Template angle data expanded successfully [binary]." << std::endl;
     }
 
     // ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
@@ -1779,11 +2007,11 @@ T_T::Template::Ptr SearchTemplate::loadModelFileFromBinary(std::string path)
 }
 
 
-// Helper function to check if a point is within image bounds
+// 辅助函数：检查点是否位于图像边界内
 bool isPointInBounds(const cv::Point2f& pt, int cols, int rows) {
     return pt.x >= 0 && pt.x < cols && pt.y >= 0 && pt.y < rows;
 }
-// Helper function to clip a point to image boundaries
+// 辅助函数：将点裁剪到图像边界内
 cv::Point2f clipPoint(const cv::Point2f& pt, int cols, int rows) {
     return cv::Point2f(
         std::max(0.0f, std::min(static_cast<float>(cols - 1), pt.x)),
@@ -1869,11 +2097,11 @@ void SearchTemplate::drawMatchResults(cv::Mat& image, const std::vector<T_T::Mat
         for (int j = 0; j < 4; j++) {
             cv::Point2f p1_f = vertices[j];
             cv::Point2f p2_f = vertices[(j + 1) % 4];
-            // Convert to cv::Point for clipLine
+            // 转换为 cv::Point 后调用 clipLine
             cv::Point p1 = cv::Point(static_cast<int>(p1_f.x), static_cast<int>(p1_f.y));
             cv::Point p2 = cv::Point(static_cast<int>(p2_f.x), static_cast<int>(p2_f.y));
             if (cv::clipLine(cv::Rect(0, 0, image.cols, image.rows), p1, p2)) {
-                // Convert back to cv::Point2f for drawing
+                // 转回 cv::Point2f 用于绘制
                 p1_f = cv::Point2f(static_cast<float>(p1.x), static_cast<float>(p1.y));
                 p2_f = cv::Point2f(static_cast<float>(p2.x), static_cast<float>(p2.y));
                 cv::line(image, p1_f, p2_f, cv::Scalar(r, g, b), 2, cv::LINE_AA);
@@ -1887,11 +2115,11 @@ void SearchTemplate::drawMatchResults(cv::Mat& image, const std::vector<T_T::Mat
         float arrow_length = image_width_ / 2.0f;
         end_point.x = start_point.x + arrow_length * cos(rad);
         end_point.y = start_point.y + arrow_length * sin(rad);
-        // Convert to cv::Point for clipLine
+        // 转换为 cv::Point 后调用 clipLine
         cv::Point start = cv::Point(static_cast<int>(start_point.x), static_cast<int>(start_point.y));
         cv::Point end = cv::Point(static_cast<int>(end_point.x), static_cast<int>(end_point.y));
         if (cv::clipLine(cv::Rect(0, 0, image.cols, image.rows), start, end)) {
-            // Convert back to cv::Point2f for drawing
+            // 转回 cv::Point2f 用于绘制
             start_point = cv::Point2f(static_cast<float>(start.x), static_cast<float>(start.y));
             end_point = cv::Point2f(static_cast<float>(end.x), static_cast<float>(end.y));
             cv::arrowedLine(image, start_point, end_point, cv::Scalar(r, g, b), 2, cv::LINE_AA, 0, 0.2);
@@ -1918,6 +2146,128 @@ void SearchTemplate::drawMatchResults(cv::Mat& image, const std::vector<T_T::Mat
         cv::putText(image, std::to_string(distance), midpoint, cv::FONT_HERSHEY_PLAIN, 1, cv::Scalar(r, g, b), 1, cv::LINE_AA);
     }
 */
+}
+
+namespace
+{
+void drawEdgeLabel(cv::Mat& image, const cv::Point& a, const cv::Point& b,
+                   const std::string& text, const cv::Scalar& color)
+{
+    if (a == b || image.empty()) return;
+    double angle = std::atan2(static_cast<double>(b.y - a.y), b.x - a.x) * 180.0 / CV_PI;
+    if (angle > 90.0 || angle < -90.0) angle += 180.0;
+    const double fontScale = 0.45;
+    const int thickness = 1;
+    int baseline = 0;
+    const cv::Size textSize = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX,
+                                               fontScale, thickness, &baseline);
+    const int pad = 3;
+    cv::Mat label(textSize.height + baseline + 2 * pad, textSize.width + 2 * pad,
+                  CV_8UC3, cv::Scalar(30, 30, 30));
+    cv::putText(label, text, cv::Point(pad, pad + textSize.height),
+                cv::FONT_HERSHEY_SIMPLEX, fontScale, color, thickness, cv::LINE_AA);
+    cv::Mat mask(label.size(), CV_8UC1, cv::Scalar(255));
+    const cv::Point2f center(label.cols * 0.5f, label.rows * 0.5f);
+    cv::Mat rotation = cv::getRotationMatrix2D(center, angle, 1.0);
+    const cv::Rect2f bounds = cv::RotatedRect(center, label.size(), angle).boundingRect2f();
+    rotation.at<double>(0, 2) += bounds.width * 0.5 - center.x;
+    rotation.at<double>(1, 2) += bounds.height * 0.5 - center.y;
+    cv::Mat rotatedLabel, rotatedMask;
+    cv::warpAffine(label, rotatedLabel, rotation, bounds.size(), cv::INTER_LINEAR,
+                   cv::BORDER_CONSTANT, cv::Scalar());
+    cv::warpAffine(mask, rotatedMask, rotation, bounds.size(), cv::INTER_NEAREST,
+                   cv::BORDER_CONSTANT, cv::Scalar());
+    const cv::Point midpoint((a.x + b.x) / 2, (a.y + b.y) / 2);
+    cv::Rect target(midpoint.x - rotatedLabel.cols / 2,
+                    midpoint.y - rotatedLabel.rows / 2 - 3,
+                    rotatedLabel.cols, rotatedLabel.rows);
+    const cv::Rect clipped = target & cv::Rect(0, 0, image.cols, image.rows);
+    if (clipped.empty()) return;
+    const cv::Rect source(clipped.x - target.x, clipped.y - target.y,
+                          clipped.width, clipped.height);
+    rotatedLabel(source).copyTo(image(clipped), rotatedMask(source));
+}
+}
+
+void SearchTemplate::drawMatchResults(cv::Mat& image,
+                                      const std::vector<T_T::MatchResult>& results,
+                                      const T_T::Template::Ptr& model)
+{
+    if (image.empty() || !model || model->templates.empty()) return;
+    const auto& shapeInfo = model->templates[0];
+    for (size_t index = 0; index < results.size(); ++index)
+    {
+        const auto& result = results[index];
+        if (result.score <= 0.0) continue;
+        if (result.template_id != -1 && result.template_id != model->template_cfg.id) continue;
+        int r, g, b;
+        _hsvToRgb(&r, &g, &b,
+                  results.empty() ? 0 : static_cast<int>(360.0 * index / results.size()), 100, 100);
+        const cv::Scalar color(b, g, r);
+        const T_T::ShapeAngle::Ptr* selected = nullptr;
+        double bestAngleDifference = std::numeric_limits<double>::max();
+        for (const auto& angle : shapeInfo->shape_angle)
+        {
+            const double difference = std::abs(angle->angle + result.pose.angle);
+            if (difference < bestAngleDifference)
+            {
+                bestAngleDifference = difference;
+                selected = &angle;
+            }
+        }
+        if (selected)
+        {
+            for (const auto& point : (*selected)->shape_point)
+            {
+                const int x = cvRound(result.pose.x + point.x * result.scale);
+                const int y = cvRound(result.pose.y + point.y * result.scale);
+                if (x >= 0 && x < image.cols && y >= 0 && y < image.rows)
+                    cv::circle(image, cv::Point(x, y), 1, color, cv::FILLED, cv::LINE_AA);
+            }
+        }
+
+        cv::RotatedRect frame(cv::Point2f(result.pose.x, result.pose.y),
+                              cv::Size2f(model->template_cfg.image_width * result.scale,
+                                         model->template_cfg.image_height * result.scale),
+                              -result.pose.angle);
+        cv::Point2f vertices[4];
+        frame.points(vertices);
+        double longest = -1.0;
+        cv::Point labelA, labelB;
+        for (int edge = 0; edge < 4; ++edge)
+        {
+            cv::Point a(cvRound(vertices[edge].x), cvRound(vertices[edge].y));
+            cv::Point bpt(cvRound(vertices[(edge + 1) % 4].x),
+                          cvRound(vertices[(edge + 1) % 4].y));
+            if (!cv::clipLine(cv::Rect(0, 0, image.cols, image.rows), a, bpt)) continue;
+            cv::line(image, a, bpt, color, 2, cv::LINE_AA);
+            const double length = cv::norm(a - bpt);
+            if (length > longest)
+            {
+                longest = length;
+                labelA = a;
+                labelB = bpt;
+            }
+        }
+        if (longest > 0.0)
+        {
+            char label[128];
+            std::snprintf(label, sizeof(label), "#%zu T:%d %.3f s:%.2f",
+                          index, result.template_id, result.score, result.scale);
+            drawEdgeLabel(image, labelA, labelB, label, color);
+        }
+    }
+}
+
+void SearchTemplate::drawMatchResults(cv::Mat& image,
+                                      const std::vector<T_T::MatchResult>& results,
+                                      const std::vector<T_T::Template::Ptr>& models)
+{
+    for (const auto& model : models)
+    {
+        if (!model) continue;
+        drawMatchResults(image, results, model);
+    }
 }
 
 void SearchTemplate::_hsvToRgb(int* r, int* g, int* b, int h, int s, int v)
@@ -1967,4 +2317,3 @@ void SearchTemplate::_hsvToRgb(int* r, int* g, int* b, int h, int s, int v)
         break;
     }
 }
-

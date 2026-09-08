@@ -2,6 +2,7 @@
 #include <omp.h>
 #include <thread>
 #include <fstream>
+#include <cmath>
 
 using namespace SM_V1;
 
@@ -62,6 +63,7 @@ bool CreateTemplate::_selectScatteredFeatures(
             distance_square = distance * distance;
         }
     }
+    return true;
 }
 
 // 5x5 高斯滤波
@@ -112,7 +114,7 @@ void CreateTemplate::_extractShapeInfo(
     std::vector<T_T::TemplateFeatures> TF0degree, TF0degree_temp;
 
     //===================================================================================
-    // step 0：获取图像的高斯模糊后的梯度信息[grad_x_edge,grad_y_edge] & 未做模糊的梯度信息[grad_x,grad_y]
+    // 步骤 0：获取高斯模糊后的梯度信息[grad_x_edge,grad_y_edge]及原始梯度信息[grad_x,grad_y]
     //===================================================================================
     ///************************** [高斯模糊->获取边缘点] ********************************///
 #if 0
@@ -136,7 +138,7 @@ void CreateTemplate::_extractShapeInfo(
     int count = 0, i, j;
 
     //===================================================================================
-    // step 1：获取图像的梯度方向[Make Direction]
+    // 步骤 1：获取图像的梯度方向
     //===================================================================================
     for (i = 1; i < width - 1; i++)
     {
@@ -187,10 +189,10 @@ void CreateTemplate::_extractShapeInfo(
             pBufOrien[count] = static_cast<int32_t>(direction);
             count++;
         }
-    } // END [S1:Make Direction]
+    } // 结束 [S1：生成方向]
 
     //===================================================================================
-    // step 2：非最大值抑制[NMS]
+    // 步骤 2：非最大值抑制[NMS]
     //===================================================================================
     // 初始化 count
     count = 0;
@@ -233,10 +235,10 @@ void CreateTemplate::_extractShapeInfo(
             }
             count++;
         }
-    } // END [S2:NMS]
+    } // 结束 [S2：非极大值抑制]
 
     //===================================================================================
-    // step 3：滞后阈值，双阈值
+    // 步骤 3：滞后阈值，双阈值
     //===================================================================================
     int flag = 1;
     for (i = 1; i < width - 1; i++)
@@ -287,7 +289,7 @@ void CreateTemplate::_extractShapeInfo(
             }
 
             //===================================================================================
-            // step 4：保存数据集
+    // 步骤 4：保存数据集
             //===================================================================================
             if (flag != 0) //强边缘标志
             {
@@ -301,7 +303,7 @@ void CreateTemplate::_extractShapeInfo(
     }
     /*
         //===================================================================================
-        // step 4：特征数过滤: 用特征点数百分比计算特征点数：Max*_features_rate
+        // 步骤 4：特征数过滤：按特征点比例计算保留数量
         // 原则：梯度强度由高到低排序，按特征采样比例剔除梯度较弱的梯度信息
         //===================================================================================
         if (features_rate_ >= 1.0f) features_rate_ = 1.0;
@@ -352,36 +354,15 @@ void CreateTemplate::_extractShapeInfo(
 void CreateTemplate::_initialShapeModelPyd(T_T::ShapeInfo::Ptr shape_info_vec, int angle_start, int angle_stop,
                                            double angle_step)
 {
-    //初始化 Vector:shape_angle，内含智能指针
-    int angle_num = 0;
-    for (double iAngle = angle_start; iAngle < angle_stop; iAngle += angle_step)
-    {
-        angle_num++;
-    }
-    for (int i = 0; i < angle_num + 2; i++)
-    {
-        shape_info_vec->shape_angle.push_back(std::make_shared<T_T::ShapeAngle>());
-    }
-
-    int angleNum = 0;
-    //如果起始角度与终止角度相同（-180~-180）
-    if (angle_start == angle_stop)
-    {
-        angleNum = 2; //角度变化只有1个，加上模板为0角度，则是2个
-        shape_info_vec->shape_angle[0]->angle = 0;
-        shape_info_vec->shape_angle[1]->angle = angle_start;
-    }
-    //如果起始角度与终止角度不同（-180~180）
-    else
-    {
-        shape_info_vec->shape_angle[0]->angle = 0;
-        for (double iAngle = angle_start; iAngle < angle_stop; iAngle += angle_step)
-        {
-            shape_info_vec->shape_angle[angleNum + 1]->angle = iAngle; //[]内为1-360
-            angleNum++;
-        }
-        shape_info_vec->shape_angle[angleNum + 1]->angle = angle_stop;
-    }
+    // 训练文件只保存每层金字塔的 canonical 0° 特征。搜索角度序列在模型加载时
+    // 由 angle_start/angle_stop/angle_step 确定性展开，避免训练阶段的无效旋转和内存峰值。
+    (void)angle_start;
+    (void)angle_stop;
+    (void)angle_step;
+    shape_info_vec->shape_angle.clear();
+    auto canonical = std::make_shared<T_T::ShapeAngle>();
+    canonical->angle = 0.0;
+    shape_info_vec->shape_angle.push_back(canonical);
 }
 
 // 初始化模板资源
@@ -390,6 +371,9 @@ void CreateTemplate::_initialShapeModel(T_T::Template::Ptr model_id)
     int angleStart = model_id->template_cfg.angle_start;
     double angleStep = model_id->template_cfg.angle_step;
     int angleStop = model_id->template_cfg.angle_end;
+
+    // 允许调用者复用同一 model_id，不保留上次创建的金字塔/角度数据。
+    model_id->templates.clear();
 
     //初始化 Vector:templates，内含智能指针
     for (int i = 0; i < model_id->template_cfg.num_levels + 1; i++)
@@ -502,6 +486,7 @@ bool CreateTemplate::_rotatedShapeInfo(T_T::ShapeInfo::Ptr shape_info_vec, int x
             //            //保持不变
         }
     }
+    return true;
 }
 
 // 创建角度模板序列
@@ -515,13 +500,7 @@ bool CreateTemplate::_buildModelList(
     // S1-对金字塔第n层的0角度 ---> 模板特征进行提取
     _extractShapeInfo(image_data, (uint8_t*)mask_data.data, shape_info_vec->shape_angle[0], min_contrast, max_contrast);
 
-    int xOffSet = image_data.cols / 2;
-    int yOffSet = image_data.rows / 2;
-
-    // Rotated features
-    _rotatedShapeInfo(shape_info_vec, xOffSet, yOffSet);
-
-    // S2-求特征的外接最大矩形
+    // S2-只计算 canonical 特征的外包围矩形。其他角度在加载阶段展开并计算。
     for (const auto item : shape_info_vec->shape_angle)
     {
         if (item->shape_point.size() != 0) //如果该层没有特征点则跳出
@@ -591,8 +570,7 @@ bool CreateTemplate::_createModel(cv::Mat template_img, cv::Mat mask_img, T_T::T
                 break;
             case 2:
                 {
-                    cv::pyrDown(template_imgPy1, template_imgPy2,
-                                cv::Size(template_imgPy1.cols / 2, template_imgPy1.rows / 2));
+                    cv::pyrDown(template_imgPy1, template_imgPy2, cv::Size(template_imgPy1.cols / 2, template_imgPy1.rows / 2));
                     cv::pyrDown(mask_imgPy1, mask_imgPy2, cv::Size(mask_imgPy1.cols / 2, mask_imgPy1.rows / 2));
 
                     isBuild = _buildModelList(
@@ -606,8 +584,7 @@ bool CreateTemplate::_createModel(cv::Mat template_img, cv::Mat mask_img, T_T::T
                 break;
             case 3:
                 {
-                    cv::pyrDown(template_imgPy2, template_imgPy3,
-                                cv::Size(template_imgPy2.cols / 2, template_imgPy2.rows / 2));
+                    cv::pyrDown(template_imgPy2, template_imgPy3, cv::Size(template_imgPy2.cols / 2, template_imgPy2.rows / 2));
                     cv::pyrDown(mask_imgPy2, mask_imgPy3, cv::Size(mask_imgPy2.cols / 2, mask_imgPy2.rows / 2));
 
                     isBuild = _buildModelList(
@@ -621,8 +598,7 @@ bool CreateTemplate::_createModel(cv::Mat template_img, cv::Mat mask_img, T_T::T
                 break;
             case 4:
                 {
-                    cv::pyrDown(template_imgPy3, template_imgPy4,
-                                cv::Size(template_imgPy3.cols / 2, template_imgPy3.rows / 2));
+                    cv::pyrDown(template_imgPy3, template_imgPy4, cv::Size(template_imgPy3.cols / 2, template_imgPy3.rows / 2));
                     cv::pyrDown(mask_imgPy3, mask_imgPy4, cv::Size(mask_imgPy3.cols / 2, mask_imgPy3.rows / 2));
 
                     isBuild = _buildModelList(
@@ -636,8 +612,7 @@ bool CreateTemplate::_createModel(cv::Mat template_img, cv::Mat mask_img, T_T::T
                 break;
             case 5:
                 {
-                    cv::pyrDown(template_imgPy4, template_imgPy5,
-                                cv::Size(template_imgPy4.cols / 2, template_imgPy4.rows / 2));
+                    cv::pyrDown(template_imgPy4, template_imgPy5, cv::Size(template_imgPy4.cols / 2, template_imgPy4.rows / 2));
                     cv::pyrDown(mask_imgPy4, mask_imgPy5, cv::Size(mask_imgPy4.cols / 2, mask_imgPy4.rows / 2));
 
                     isBuild = _buildModelList(
@@ -651,8 +626,7 @@ bool CreateTemplate::_createModel(cv::Mat template_img, cv::Mat mask_img, T_T::T
                 break;
             case 6:
                 {
-                    cv::pyrDown(template_imgPy5, template_imgPy6,
-                                cv::Size(template_imgPy5.cols / 2, template_imgPy5.rows / 2));
+                    cv::pyrDown(template_imgPy5, template_imgPy6, cv::Size(template_imgPy5.cols / 2, template_imgPy5.rows / 2));
                     cv::pyrDown(mask_imgPy5, mask_imgPy6, cv::Size(mask_imgPy5.cols / 2, mask_imgPy5.rows / 2));
 
                     isBuild = _buildModelList(
@@ -666,8 +640,7 @@ bool CreateTemplate::_createModel(cv::Mat template_img, cv::Mat mask_img, T_T::T
                 break;
             case 7:
                 {
-                    cv::pyrDown(template_imgPy6, template_imgPy7,
-                                cv::Size(template_imgPy6.cols / 2, template_imgPy6.rows / 2));
+                    cv::pyrDown(template_imgPy6, template_imgPy7, cv::Size(template_imgPy6.cols / 2, template_imgPy6.rows / 2));
                     cv::pyrDown(mask_imgPy6, mask_imgPy7, cv::Size(mask_imgPy6.cols / 2, mask_imgPy6.rows / 2));
 
                     isBuild = _buildModelList(
@@ -681,7 +654,7 @@ bool CreateTemplate::_createModel(cv::Mat template_img, cv::Mat mask_img, T_T::T
                 break;
             default:
                 break;
-            } // switch case
+    } // 分支结束
         } // end for:金字塔层数
 
         //金字塔层数优化（图像缩放变形后失真的问题）
@@ -792,13 +765,61 @@ bool CreateTemplate::createTemplate(
     int max_contrast,
     T_T::Template::Ptr model_id)
 {
+    if (!model_id)
+    {
+        std::cerr << "Template creation failed: model_id is empty." << std::endl;
+        return false;
+    }
+    if (temp.empty() || mask.empty())
+    {
+        std::cerr << "Template creation failed: template image and mask must not be empty." << std::endl;
+        return false;
+    }
+    if (temp.size() != mask.size())
+    {
+        std::cerr << "Template creation failed: template image and mask sizes differ." << std::endl;
+        return false;
+    }
+    if (num_levels < -1 || num_levels > 7)
+    {
+        std::cerr << "Template creation failed: num_levels must be -1 or in [0, 7]." << std::endl;
+        return false;
+    }
+    if (!std::isfinite(angle_step) || angle_step <= 0.0 || angle_start > angle_end)
+    {
+        std::cerr << "Template creation failed: invalid angle range or non-positive finite angle_step." << std::endl;
+        return false;
+    }
+    if ((!create_otsu && (min_contrast < 0 || max_contrast > 255 || min_contrast > max_contrast)))
+    {
+        std::cerr << "Template creation failed: contrast thresholds must satisfy 0 <= min <= max <= 255." << std::endl;
+        return false;
+    }
+
     cv::Mat tempMat, maskMat;
     tempMat = temp.clone();
     maskMat = mask.clone();
 
     // 如果彩色图像，转灰度图像
     if (tempMat.channels() == 3) { cv::cvtColor(tempMat, tempMat, cv::COLOR_BGR2GRAY); }
+    else if (tempMat.channels() == 4) { cv::cvtColor(tempMat, tempMat, cv::COLOR_BGRA2GRAY); }
+    else if (tempMat.channels() != 1)
+    {
+        std::cerr << "Template creation failed: template image must have 1, 3, or 4 channels." << std::endl;
+        return false;
+    }
     if (maskMat.channels() == 3) { cv::cvtColor(maskMat, maskMat, cv::COLOR_BGR2GRAY); }
+    else if (maskMat.channels() == 4) { cv::cvtColor(maskMat, maskMat, cv::COLOR_BGRA2GRAY); }
+    else if (maskMat.channels() != 1)
+    {
+        std::cerr << "Template creation failed: mask must have 1, 3, or 4 channels." << std::endl;
+        return false;
+    }
+    if (tempMat.depth() != CV_8U || maskMat.depth() != CV_8U)
+    {
+        std::cerr << "Template creation failed: template image and mask must be 8-bit images." << std::endl;
+        return false;
+    }
     // 自动阈值分割
     if (create_otsu == true)
     {
@@ -820,6 +841,7 @@ bool CreateTemplate::createTemplate(
     model_id->template_cfg.angle_start = angle_start;
     model_id->template_cfg.angle_end = angle_end;
     model_id->template_cfg.angle_step = angle_step;
+    model_id->template_cfg.create_otsu = create_otsu;
     model_id->template_cfg.min_contrast = min_contrast;
     model_id->template_cfg.max_contrast = max_contrast;
     model_id->template_cfg.id = 1;
@@ -854,8 +876,9 @@ bool CreateTemplate::createTemplate(
         default:
             break;
         }
+
     }
-    else // num_levels = 0,1,2,3,4,5,6,7
+    else // num_levels = 0、1、2、3、4、5、6、7
     {
         model_id->template_cfg.num_levels = num_levels;
     }
@@ -863,7 +886,13 @@ bool CreateTemplate::createTemplate(
     CreateTemplate::_initialShapeModel(model_id);
 
     // model_id存储的特征点坐标（模板中心点为原点坐标）
-    CreateTemplate::_createModel(tempMat, maskMat, model_id);
+    if (!CreateTemplate::_createModel(tempMat, maskMat, model_id))
+    {
+        model_id->templates.clear();
+        model_id->template_cfg.is_inited = false;
+        model_id->is_empty = true;
+        return false;
+    }
 
     //金字塔层数优化：根据金字塔每层的特征点（轮廓点）的数量（>20）来定义金字塔层数
     if (num_levels == -1)
@@ -1085,17 +1114,35 @@ bool CreateTemplate::createTemplate(
     {
         model_id->template_cfg.num_levels = num_levels;
     }
+
+    if (num_levels == -1)
+    {
+        // 细长或低纹理模板不应在顶层被压缩到过少像素/特征。
+        // 保证粗匹配层仍有足够的几何辨识度，避免正确候选在顶层丢失。
+        while (model_id->template_cfg.num_levels > 0)
+        {
+            const int level = model_id->template_cfg.num_levels;
+            const int scale = 1 << level;
+            const int level_width = (tempMat.cols + scale - 1) / scale;
+            const int level_height = (tempMat.rows + scale - 1) / scale;
+            const size_t feature_count = model_id->templates[level]->shape_angle[0]->shape_point.size();
+            if (std::min(level_width, level_height) >= 8 && feature_count >= 40) { break; }
+            --model_id->template_cfg.num_levels;
+        }
+    }
+    model_id->is_empty = false;
+    model_id->is_inited = true;
     return true;
 }
 
-// 保存模板文件json
+// 保存模板 JSON 文件
 bool CreateTemplate::saveModelFile2Json(T_T::Template::Ptr model_id, std::string path)
 {
     int num_pyramid = model_id->templates.size();
     std::string model_name = path;
     cv::FileStorage fs(model_name, cv::FileStorage::WRITE);
 
-    // shape Match model
+    // ShapeMatch 模型
     fs << "shapeMatch";
     fs << "{";
 
@@ -1151,7 +1198,7 @@ bool CreateTemplate::saveModelFile2Json(T_T::Template::Ptr model_id, std::string
     fs << "}";
 
     fs.release();
-    std::cout << "保存模板文件成功[Json]!" << std::endl;
+    std::cout << "Template file saved successfully [JSON]." << std::endl;
     return true;
 }
 
@@ -1163,7 +1210,7 @@ bool CreateTemplate::saveModelFile2Binary(T_T::Template::Ptr model_id, std::stri
     std::ofstream ofs(path, std::ios::binary);
     if (!ofs.is_open())
     {
-        std::cerr << "无法打开文件 " << path << " 来保存数据!" << std::endl;
+        std::cerr << "Failed to open file for saving: " << path << std::endl;
         return false;
     }
 
@@ -1216,7 +1263,7 @@ bool CreateTemplate::saveModelFile2Binary(T_T::Template::Ptr model_id, std::stri
     }
 
     ofs.close(); // 关闭文件流
-    std::cout << "保存模板文件成功[Binary]!" << std::endl;
+    std::cout << "Template file saved successfully [binary]." << std::endl;
     return true;
 }
 
@@ -1230,7 +1277,7 @@ std::vector<cv::Point2d> CreateTemplate::getTemplatePointPyramid(T_T::Template::
         return std::vector<cv::Point2d>();
     }
     std::vector<cv::Point2d> result_points;
-    //    printf("Pyramid Level: Current->%d,Max->%d\n", num_level, model_id->template_cfg.num_levels);
+    //    printf("金字塔层级：当前->%d，最大->%d\n", num_level, model_id->template_cfg.num_levels);
     if (num_level <= model_id->template_cfg.num_levels)
     {
         for (int i = 0; i < model_id->templates[num_level]->shape_angle[0]->shape_point.size(); i++)
@@ -1250,4 +1297,3 @@ std::vector<cv::Point2d> CreateTemplate::getTemplatePointPyramid(T_T::Template::
 
     return result_points;
 }
-

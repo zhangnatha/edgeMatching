@@ -3,6 +3,14 @@
 
 This project provides functionality for template matching using OpenCV. It includes shared libraries for template creation and finding, as well as executables for training and inference.
 
+## Features
+
+- **Compact canonical model**: training extracts only the canonical `0°` edge features at each pyramid level. Search angles are generated and cached when the model is loaded, rather than being redundantly calculated and stored during training.
+- **Partial visibility**: targets cut by an image boundary can be matched. Only in-image feature points contribute to the score, subject to a configurable minimum visible ratio; drawing is clipped to the image.
+- **Multi-scale matching**: a discrete scale range such as `0.8` to `1.2` can be searched without retraining the template.
+- **Multiple templates**: several model files can be searched in one call. Every result includes its template ID, scale, score, pose, and visible ratio.
+- **Readable visualization**: the result index, template ID, score, and scale are drawn parallel to a bounding-box edge. Contours, boxes, and labels are clipped safely at image boundaries.
+
 The similarity is defined as:
 
 ![formula1.svg](assert/.md/formula1.svg)
@@ -134,6 +142,73 @@ After building the project, you can run the executables:
   ```bash
   ./inference ../assert/src.bmp
   ```
+
+  The complete command-line form is:
+
+  ```bash
+  ./inference [search_image] [model1.json model2.json ...] \
+    [--scale-min N] [--scale-max N] [--scale-step N] \
+    [--min-visible-ratio N] [--output FILE]
+  ```
+
+  For example, search two templates from `0.8x` through `1.2x`, allow targets with at least half of their template features visible, and choose the result path:
+
+  ```bash
+  ./inference ../assert/src.bmp model_a.json model_b.json \
+    --scale-min 0.8 --scale-max 1.2 --scale-step 0.05 \
+    --min-visible-ratio 0.5 --output result.png
+  ```
+
+  With no arguments, the legacy defaults remain in effect: `../assert/src.bmp`, `./model.json`, scale `1.0`, and full visibility. Paths are resolved from the process working directory, so explicit paths are recommended for automated use.
+
+  Each console result contains:
+
+  ```text
+  [index] template_id=... x=... y=... angle=... score=... scale=... visible=...
+  ```
+
+## Algorithm Overview
+
+### Template creation
+
+The input template and mask must be non-empty, equally sized 8-bit images. Color inputs are converted to grayscale. The implementation creates a Gaussian pyramid, extracts edge points and normalized gradient directions inside the mask, converts coordinates to a template-center origin, and stores one canonical `0°` feature set per level.
+
+JSON models therefore contain only the canonical features. During JSON or binary loading, the matcher uses `angle_start`, `angle_end`, and `angle_step` to rotate point coordinates and gradient vectors into the required angle cache. This reduces training work and model storage from approximately `O(levels * angles * features)` to `O(levels * features)`. Existing model loading remains supported; a historical binary model that already contains angle data must not be expanded twice.
+
+### Coarse-to-fine search
+
+The search image is converted into a gradient pyramid. Candidates are found at the coarsest usable level and refined through finer levels in position and angle. The score is based on the cosine similarity between template and image gradient directions. Nearby or strongly overlapping candidates are removed before returning at most the requested number of matches.
+
+For partial targets, transformed points outside the image are skipped safely and the score is normalized by the number of visible points. `min_visible_ratio` rejects candidates supported by too little of the template. Result drawing similarly clips the transformed contour and rotated bounding box to the image.
+
+Multi-scale matching evaluates discrete scales from `scale_min` through `scale_max` using `scale_step`, then performs cross-scale suppression. A result's `scale` is the target size relative to the trained template. Multi-template matching reuses the public search interface for each model, records `template_id`, merges candidates, and performs final overlap suppression.
+
+## Parameter Guidance
+
+| Parameter | Valid range / suggested start | Effect |
+| --- | --- | --- |
+| `angle_start`, `angle_end` | start `<=` end; restrict to the physically possible range | Wider ranges increase angle candidates and runtime. |
+| `angle_step` | finite and `> 0`; commonly `1°` | Smaller steps improve angular resolution but increase load-time cache and search cost. |
+| `min_score` | `[0, 1]`; start around `0.7` | Raise it to reduce false positives; lower it for noisy or partially visible edges. |
+| `greediness` | `(0, 1]`; start around `0.9` | Controls early rejection of weak candidates. |
+| `max_overlap` | `[0, 1]`; start around `0.5` | Lower values suppress nearby duplicate matches more aggressively. |
+| `scale_min`, `scale_max` | `0 < min <= max`; use `1,1` for legacy behavior | Defines the supported target-size range. |
+| `scale_step` | finite and `> 0`; start around `0.05` | Smaller values improve scale resolution at roughly proportional runtime cost. |
+| `min_visible_ratio` | `(0, 1]`; use `1.0` for complete targets, `0.5` as a partial-target starting point | Lower values accept more boundary truncation but increase false-positive risk. |
+
+The approximate brute-force cost is `O(positions * angles * scales * features)`. Keep angle and scale ranges as narrow as the application permits, then tune `min_score` and `min_visible_ratio` on representative normal and boundary samples.
+
+## Automated Tests
+
+CTest builds a deterministic synthetic regression that covers `0.8x`, `1.0x`, and `1.2x` matching, a target partially outside the right image boundary, two-template matching with template IDs, canonical-only training data, and visualization without an out-of-bounds failure.
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+```
+
+For a real-image smoke test without overwriting the repository model, run training and inference from a separate directory and pass explicit paths.
 
 ## Compiling with g++
 

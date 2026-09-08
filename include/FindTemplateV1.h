@@ -74,6 +74,53 @@ namespace SM_V1
                             std::vector<T_T::MatchResult>& result_list);
 
         /**
+         * @brief 单模板多尺度匹配。
+         *
+         * 原有 searchTemplate 保持同尺度语义；本重载通过 scale_cfg 启用
+         * 尺度搜索和部分可见模板匹配。
+         */
+        bool searchTemplate(cv::Mat image, cv::Mat s_mask_image,
+                            T_T::Template::Ptr model_id,
+                            int angle_start, int angle_extent,
+                            float min_score, int num_matches,
+                            float max_overlap, int num_levels,
+                            float greediness, bool sort_by_y,
+                            const T_T::ScaleSearchCfg& scale_cfg,
+                            std::vector<T_T::MatchResult>& result_list);
+
+        /** @brief ROI 内的单模板多尺度匹配。 */
+        bool searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi,
+                            T_T::Template::Ptr model_id,
+                            int angle_start, int angle_extent,
+                            float min_score, int num_matches,
+                            float max_overlap, int num_levels,
+                            float greediness, bool sort_by_y,
+                            const T_T::ScaleSearchCfg& scale_cfg,
+                            std::vector<T_T::MatchResult>& result_list);
+
+        /**
+         * @brief 多模板、多尺度匹配，结果中的 template_id 用于回溯模板。
+         */
+        bool searchTemplate(cv::Mat image, cv::Mat s_mask_image,
+                            const std::vector<T_T::Template::Ptr>& models,
+                            int angle_start, int angle_extent,
+                            float min_score, int num_matches,
+                            float max_overlap, int num_levels,
+                            float greediness, bool sort_by_y,
+                            const T_T::ScaleSearchCfg& scale_cfg,
+                            std::vector<T_T::MatchResult>& result_list);
+
+        /** @brief ROI 内的多模板、多尺度匹配。 */
+        bool searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi,
+                            const std::vector<T_T::Template::Ptr>& models,
+                            int angle_start, int angle_extent,
+                            float min_score, int num_matches,
+                            float max_overlap, int num_levels,
+                            float greediness, bool sort_by_y,
+                            const T_T::ScaleSearchCfg& scale_cfg,
+                            std::vector<T_T::MatchResult>& result_list);
+
+        /**
          * @brief 从二进制文件加载模板模型
          * @param path 模型文件路径
          * @return 模板对象指针
@@ -98,7 +145,30 @@ namespace SM_V1
         void drawMatchResults(cv::Mat& image, const std::vector<T_T::MatchResult>& results,
                               T_T::ShapeInfo::Ptr shapeInfo);
 
+        /**
+         * @brief 使用显式模板绘制带尺度、索引及得分的匹配结果。
+         *
+         * 该接口不依赖 SearchTemplate 最后一次加载的模板尺寸。
+         */
+        void drawMatchResults(cv::Mat& image, const std::vector<T_T::MatchResult>& results,
+                              const T_T::Template::Ptr& model);
+
+        /**
+         * @brief 使用模板集绘制多模板匹配结果。
+         *
+         * 根据 MatchResult::template_id 选择对应模板。
+         */
+        void drawMatchResults(cv::Mat& image, const std::vector<T_T::MatchResult>& results,
+                              const std::vector<T_T::Template::Ptr>& models);
+
     private:
+        bool _searchTemplateSingleScale(cv::Mat image, cv::Mat s_mask_image, ROI roi,
+                                        T_T::Template::Ptr model_id, int angle_start,
+                                        int angle_extent, float min_score, int num_matches,
+                                        float max_overlap, int num_levels, float greediness,
+                                        bool sort_by_y,
+                                        std::vector<T_T::MatchResult>& result_list);
+
         /**
          * @brief 粗匹配
          */
@@ -167,6 +237,7 @@ namespace SM_V1
         int stop_angle_;       /**< 搜索终止角度 */
         int image_width_ = 0;  /**< 输入图像宽度 */
         int image_height_ = 0; /**< 输入图像高度 */
+        double min_visible_ratio_ = 1.0; /**< 当前搜索要求的最小可见特征比例 */
+        std::mutex search_mutex_; /**< 保护单实例的搜索期间配置 */
     };
 } // namespace SM_V1
-

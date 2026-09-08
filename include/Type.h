@@ -75,7 +75,7 @@ namespace T_T
     struct Template
     {
         S_PTR(Template)
-        TemplateCfg template_cfg;              // TemplateCfg
+        TemplateCfg template_cfg;              // 模板配置
         std::vector<ShapeInfo::Ptr> templates; //模板图像的特征信息
         bool is_empty = true;
         bool is_inited; /**<  初始化标志 */
@@ -100,14 +100,51 @@ namespace T_T
         Pose2d(double x_, double y_, double angle_) : x(x_), y(y_), angle(angle_) {}
     };
 
+    /**
+     * @brief 多尺度及边界匹配参数。
+     *
+     * scale_step 为相邻离散尺度的增量；当三个尺度参数均为 1 时退化为
+     * 原有的同尺度匹配。min_visible_ratio 用于限制模板落在图像内的最小
+     * 特征比例，1 表示要求模板完整可见。
+     */
+    struct ScaleSearchCfg
+    {
+        double scale_min;
+        double scale_max;
+        double scale_step;
+        double min_visible_ratio;
+
+        ScaleSearchCfg(double scale_min_ = 1.0, double scale_max_ = 1.0,
+                       double scale_step_ = 1.0, double min_visible_ratio_ = 1.0)
+            : scale_min(scale_min_), scale_max(scale_max_), scale_step(scale_step_),
+              min_visible_ratio(min_visible_ratio_)
+        {
+        }
+    };
+
     //	匹配结果结构体
     struct MatchResult
     {
-        // S_PTR(MatchResult)
-        Pose2d pose;  //匹配到的坐标（x,y,angle）
-        double score; //匹配得分
+        Pose2d pose;         // 匹配到的坐标（x,y,angle）
+        double score;        // 匹配得分
+        double scale;        // 目标相对于原始模板的尺度（1.0 为原尺寸）
+        int template_id;     // 匹配到的模板 ID，-1 表示未指定
+        double visible_ratio; // 落在待测图内的模板特征比例
+
+        MatchResult()
+            : pose(0.0, 0.0, 0.0), score(0.0), scale(1.0), template_id(-1), visible_ratio(1.0)
+        {
+        }
+
+        // 保留现有 `{Pose2d(...), score}` 构造用法的语义。
+        MatchResult(const Pose2d& pose_, double score_, double scale_ = 1.0,
+                    int template_id_ = -1, double visible_ratio_ = 1.0)
+            : pose(pose_), score(score_), scale(scale_), template_id(template_id_),
+              visible_ratio(visible_ratio_)
+        {
+        }
     };
-} // namespace T_T
+} // T_T 命名空间
 
 
 namespace I_I
@@ -180,4 +217,4 @@ namespace I_I
         std::vector<Template> templates;
         std::vector<Template> reducedTemplates;
     };
-}    // namespace I_I
+}    // I_I 命名空间
