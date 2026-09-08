@@ -2142,12 +2142,23 @@ void SearchTemplate::drawMatchResults(cv::Mat& image, const std::vector<T_T::Mat
 
 namespace
 {
-void drawEdgeLabel(cv::Mat& image, const cv::Point& a, const cv::Point& b,
-                   const std::string& text, const cv::Scalar& color)
+void drawEdgeLabel(cv::Mat& image, cv::Point2f a, cv::Point2f b,
+                   const cv::Point2f& frameCenter, const std::string& text,
+                   const cv::Scalar& color)
 {
-    if (a == b || image.empty()) return;
-    double angle = std::atan2(static_cast<double>(b.y - a.y), b.x - a.x) * 180.0 / CV_PI;
-    if (angle > 90.0 || angle < -90.0) angle += 180.0;
+    cv::Point2f tangent = b - a;
+    const float edgeLength = std::sqrt(tangent.dot(tangent));
+    if (edgeLength < 1.0f || image.empty()) return;
+    tangent *= 1.0f / edgeLength;
+    // Keep labels readable from left to right.  Image y grows downwards, whereas
+    // getRotationMatrix2D uses a positive mathematical (counter-clockwise) angle.
+    if (tangent.x < 0.0f)
+    {
+        std::swap(a, b);
+        tangent = -tangent;
+    }
+    const double screenAngle = std::atan2(static_cast<double>(tangent.y), tangent.x) *
+                               180.0 / CV_PI;
     const double fontScale = 0.45;
     const int thickness = 1;
     int baseline = 0;
@@ -2160,8 +2171,9 @@ void drawEdgeLabel(cv::Mat& image, const cv::Point& a, const cv::Point& b,
                 cv::FONT_HERSHEY_SIMPLEX, fontScale, color, thickness, cv::LINE_AA);
     cv::Mat mask(label.size(), CV_8UC1, cv::Scalar(255));
     const cv::Point2f center(label.cols * 0.5f, label.rows * 0.5f);
-    cv::Mat rotation = cv::getRotationMatrix2D(center, angle, 1.0);
-    const cv::Rect2f bounds = cv::RotatedRect(center, label.size(), angle).boundingRect2f();
+    const double opencvAngle = -screenAngle;
+    cv::Mat rotation = cv::getRotationMatrix2D(center, opencvAngle, 1.0);
+    const cv::Rect2f bounds = cv::RotatedRect(center, label.size(), opencvAngle).boundingRect2f();
     rotation.at<double>(0, 2) += bounds.width * 0.5 - center.x;
     rotation.at<double>(1, 2) += bounds.height * 0.5 - center.y;
     cv::Mat rotatedLabel, rotatedMask;
@@ -2169,9 +2181,14 @@ void drawEdgeLabel(cv::Mat& image, const cv::Point& a, const cv::Point& b,
                    cv::BORDER_CONSTANT, cv::Scalar());
     cv::warpAffine(mask, rotatedMask, rotation, bounds.size(), cv::INTER_NEAREST,
                    cv::BORDER_CONSTANT, cv::Scalar());
-    const cv::Point midpoint((a.x + b.x) / 2, (a.y + b.y) / 2);
-    cv::Rect target(midpoint.x - rotatedLabel.cols / 2,
-                    midpoint.y - rotatedLabel.rows / 2 - 3,
+    const cv::Point2f midpoint = (a + b) * 0.5f;
+    cv::Point2f outward = midpoint - frameCenter;
+    const float outwardLength = std::sqrt(outward.dot(outward));
+    if (outwardLength > 1e-3f) outward *= 1.0f / outwardLength;
+    else outward = cv::Point2f(-tangent.y, tangent.x);
+    const cv::Point2f anchor = midpoint + outward * (0.5f * label.rows + 5.0f);
+    cv::Rect target(cvRound(anchor.x - rotatedLabel.cols * 0.5f),
+                    cvRound(anchor.y - rotatedLabel.rows * 0.5f),
                     rotatedLabel.cols, rotatedLabel.rows);
     const cv::Rect clipped = target & cv::Rect(0, 0, image.cols, image.rows);
     if (clipped.empty()) return;
@@ -2225,28 +2242,43 @@ void SearchTemplate::drawMatchResults(cv::Mat& image,
         cv::Point2f vertices[4];
         frame.points(vertices);
         double longest = -1.0;
-        cv::Point labelA, labelB;
+        cv::Point2f labelA, labelB;
         for (int edge = 0; edge < 4; ++edge)
         {
-            cv::Point a(cvRound(vertices[edge].x), cvRound(vertices[edge].y));
-            cv::Point bpt(cvRound(vertices[(edge + 1) % 4].x),
-                          cvRound(vertices[(edge + 1) % 4].y));
+            const cv::Point2f originalA = vertices[edge];
+            const cv::Point2f originalB = vertices[(edge + 1) % 4];
+            cv::Point a(cvRound(originalA.x), cvRound(originalA.y));
+            cv::Point bpt(cvRound(originalB.x), cvRound(originalB.y));
             if (!cv::clipLine(cv::Rect(0, 0, image.cols, image.rows), a, bpt)) continue;
             cv::line(image, a, bpt, color, 2, cv::LINE_AA);
-            const double length = cv::norm(a - bpt);
+            const double length = cv::norm(originalA - originalB);
             if (length > longest)
             {
                 longest = length;
-                labelA = a;
-                labelB = bpt;
+                labelA = originalA;
+                labelB = originalB;
             }
+        }
+
+        // The arrow is the template's positive x-axis and therefore makes the
+        // otherwise symmetric rotated rectangle's angle direction unambiguous.
+        const double direction = -result.pose.angle * CV_PI / 180.0;
+        const float arrowLength = std::max(18.0f, std::min(80.0f,
+            static_cast<float>(model->template_cfg.image_width * result.scale * 0.35)));
+        cv::Point arrowStart(cvRound(frame.center.x), cvRound(frame.center.y));
+        cv::Point arrowEnd(cvRound(frame.center.x + arrowLength * std::cos(direction)),
+                           cvRound(frame.center.y + arrowLength * std::sin(direction)));
+        if (cv::clipLine(cv::Rect(0, 0, image.cols, image.rows), arrowStart, arrowEnd))
+        {
+            cv::circle(image, arrowStart, 3, color, cv::FILLED, cv::LINE_AA);
+            cv::arrowedLine(image, arrowStart, arrowEnd, color, 2, cv::LINE_AA, 0, 0.22);
         }
         if (longest > 0.0)
         {
             char label[128];
             std::snprintf(label, sizeof(label), "#%zu T:%d %.3f s:%.2f",
                           index, result.template_id, result.score, result.scale);
-            drawEdgeLabel(image, labelA, labelB, label, color);
+            drawEdgeLabel(image, labelA, labelB, frame.center, label, color);
         }
     }
 }
