@@ -68,6 +68,18 @@ namespace SM_V1
         std::vector<cv::Point2d> getTemplatePointPyramid(T_T::Template::Ptr model_id, int num_level);
 
         /**
+         * @brief 将各层真实灰度金字塔及其 canonical 特征绘制到对角展开画布
+         * @param template_image 训练所用的原始模板图像
+         * @param model_id 已创建的模板对象
+         * @param output 输出 BGR 图像（从左上角最粗层到右下角原始层）
+         * @return true 绘制成功
+         * @return false 输入或模型无效
+         */
+        bool drawPyramidFeatures(const cv::Mat& template_image,
+                                 const T_T::Template::Ptr& model_id,
+                                 cv::Mat& output) const;
+
+        /**
          * @brief 可视化模板和匹配结果
          * @param model_id 模板对象指针
          * @param src 输入图像
@@ -135,4 +147,3 @@ namespace SM_V1
                                                   int min_contrast, int max_contrast);
     };
 } // namespace SM_V1
-

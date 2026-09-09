@@ -9,9 +9,13 @@
 
 using namespace SM_V1;
 
-#define DEBUG_SHOW 0 // 用于观测算法过程运行结果显示
+#ifndef SHAPE_MATCH_VISUALIZE_COARSE
+#define SHAPE_MATCH_VISUALIZE_COARSE 0
+#endif
+#ifndef SHAPE_MATCH_VISUALIZE_FINE
+#define SHAPE_MATCH_VISUALIZE_FINE 0
+#endif
 #define COSTTIME_SHOW 1 // 耗时统计，用于算法优化观测
-#define DEBUG_COARSE_SHOW 0 // 最高层金字塔粗匹配可视化过程
 
 SearchTemplate::SearchTemplate()
     : thread_num_(std::max(1u, std::thread::hardware_concurrency()))
@@ -170,6 +174,7 @@ void SearchTemplate::_getFeature(
     int height,
     std::vector<float>& p_buf_gradX,
     std::vector<float>& p_buf_gradY,
+    std::vector<float>& p_buf_magnitude,
     bool useSIMD)
 {
     // 分配内存
@@ -182,11 +187,14 @@ void SearchTemplate::_getFeature(
     // 待测图像的掩模图
     uint8_t* maskdata = static_cast<uint8_t*>(mask_image.data);
 
+    p_buf_magnitude.assign(bufferSize, 0.0f);
+
     // 提取待测图像的梯度信息
     if (useSIMD)
     {
         const __m256  vZero   = _mm256_setzero_ps();
         const __m256  vEps    = _mm256_set1_ps(1e-6f);
+        const __m256  vThreshold = _mm256_set1_ps(static_cast<float>(search_min_contrast_));
         const __m256i v255_i  = _mm256_set1_epi32(0xFF);
 
         for (int j = 1; j < height - 1; ++j)
@@ -239,6 +247,14 @@ void SearchTemplate::_getFeature(
 
                 __m256 mag_lo = _mm256_sqrt_ps(mag2_lo);
                 __m256 mag_hi = _mm256_sqrt_ps(mag2_hi);
+                _mm256_storeu_ps(&p_buf_magnitude[idx + 0], mag_lo);
+                _mm256_storeu_ps(&p_buf_magnitude[idx + 8], mag_hi);
+                const __m256 Gmask_lo = _mm256_and_ps(
+                    _mm256_cmp_ps(mag_lo, vEps, _CMP_GT_OQ),
+                    _mm256_cmp_ps(mag_lo, vThreshold, _CMP_GE_OQ));
+                const __m256 Gmask_hi = _mm256_and_ps(
+                    _mm256_cmp_ps(mag_hi, vEps, _CMP_GT_OQ),
+                    _mm256_cmp_ps(mag_hi, vThreshold, _CMP_GE_OQ));
                 mag_lo = _mm256_max_ps(mag_lo, vEps);
                 mag_hi = _mm256_max_ps(mag_hi, vEps);
 
@@ -257,6 +273,8 @@ void SearchTemplate::_getFeature(
                 __m256i Meq_hi  = _mm256_cmpeq_epi32(M32_hi, v255_i);
                 __m256  Mmask_lo = _mm256_castsi256_ps(Meq_lo);
                 __m256  Mmask_hi = _mm256_castsi256_ps(Meq_hi);
+                Mmask_lo = _mm256_and_ps(Mmask_lo, Gmask_lo);
+                Mmask_hi = _mm256_and_ps(Mmask_hi, Gmask_hi);
 
                 __m256 outX_lo = _mm256_blendv_ps(vZero, NX_lo, Mmask_lo);
                 __m256 outY_lo = _mm256_blendv_ps(vZero, NY_lo, Mmask_lo);
@@ -277,7 +295,9 @@ void SearchTemplate::_getFeature(
                 int16_t sdx = (int16_t)pInput[index + 1]        - (int16_t)pInput[index - 1];
                 int16_t sdy = (int16_t)pInput[index + width]    - (int16_t)pInput[index - width];
                 float mag = std::sqrt(float(sdx) * float(sdx) + float(sdy) * float(sdy));
-                if (mag < 1e-6f) { p_buf_gradX[index] = 0.f; p_buf_gradY[index] = 0.f; }
+                p_buf_magnitude[index] = mag;
+                if (!(mag > 1e-6f && mag >= static_cast<float>(search_min_contrast_)))
+                    { p_buf_gradX[index] = 0.f; p_buf_gradY[index] = 0.f; }
                 else { p_buf_gradX[index] = float(sdx) / mag; p_buf_gradY[index] = float(sdy) / mag; }
                 if (maskdata[index] != 0xFF) { p_buf_gradX[index] = 0.f; p_buf_gradY[index] = 0.f; }
             }
@@ -286,41 +306,25 @@ void SearchTemplate::_getFeature(
         free(pInput);
         return;
     }
-    else
+
+    // Scalar fallback. All current call sites request the SIMD feature extractor,
+    // but keep this path correct for debug builds and future non-AVX dispatch.
+    for (int i = 1; i < width - 1; i++)
     {
-        // 常规逐像素梯度计算
-        for (int i = 1; i < width - 1; i++)
+        for (int j = 1; j < height - 1; j++)
         {
-            for (int j = 1; j < height - 1; j++)
+            const int index = j * width + i;
+            const float dx = float(pInput[index + 1]) - float(pInput[index - 1]);
+            const float dy = float(pInput[index + width]) - float(pInput[index - width]);
+            const float magnitude = std::sqrt(dx * dx + dy * dy);
+            p_buf_magnitude[index] = magnitude;
+            if (maskdata[index] == 0xff && magnitude > 1e-6f &&
+                magnitude >= static_cast<float>(search_min_contrast_))
             {
-                int index = j * width + i;
-
-                // X方向的梯度：dx = 右 - 左
-                // Y方向的梯度：dy = 下 - 上
-                int16_t sdx = *(pInput + j * width + i + 1) - *(pInput + j * width + i - 1);
-                int16_t sdy = *(pInput + (j + 1) * width + i) - *(pInput + (j - 1) * width + i);
-
-                float magnitude = std::sqrt(static_cast<float>(sdx * sdx) + static_cast<float>(sdy * sdy));
-
-                // 梯度模不等于0（防止除法越界）
-                if (!(std::fabs(magnitude) < 1e-6))
-                {
-                    p_buf_gradX[index] = static_cast<float>(sdx) / magnitude;
-                    p_buf_gradY[index] = static_cast<float>(sdy) / magnitude;
-                }
-                else // 梯度模等于0
-                {
-                    p_buf_gradX[index] = 0;
-                    p_buf_gradY[index] = 0;
-                }
-
-                // 待搜索图像的掩膜，如果不是白色部分，即用户涂黑的部分，该部分特征值为0,不进行计算
-                if (*(maskdata + index) != 0xff)
-                {
-                    p_buf_gradX[index] = 0;
-                    p_buf_gradY[index] = 0;
-                }
+                p_buf_gradX[index] = dx / magnitude;
+                p_buf_gradY[index] = dy / magnitude;
             }
+            else p_buf_gradX[index] = p_buf_gradY[index] = 0.0f;
         }
     }
 
@@ -357,6 +361,7 @@ void SearchTemplate::_fineMatching(
     // 定义存储用中间变量dx/dy
     std::vector<float> pBufGradX_new; //存取x方向偏导数Gx
     std::vector<float> pBufGradY_new; //存取y方向偏导数Gy
+    std::vector<float> pBufMagnitude_new;
 
     // 初始化
     pBufGradX_new.resize(bufferSize);
@@ -366,7 +371,26 @@ void SearchTemplate::_fineMatching(
     int ijstep = (py_levels == 0) ? 1 : 1;
 
     // 获取每个像素的梯度信息：dx/dy
-    _getFeature(search_image, mask_image, width, height, pBufGradX_new, pBufGradY_new, true);
+    _getFeature(search_image, mask_image, width, height, pBufGradX_new, pBufGradY_new,
+                pBufMagnitude_new, true);
+
+    cv::Mat validMask, validIntegral;
+    if (variable_visibility_)
+    {
+        cv::compare(mask_image, cv::Scalar(255), validMask, cv::CMP_EQ);
+        cv::integral(validMask, validIntegral, CV_64F);
+    }
+    const auto rectangleIsVisible = [&](int x0, int y0, int x1, int y1) {
+        if (x0 < 0 || y0 < 0 || x1 >= width || y1 >= height || x0 > x1 || y0 > y1)
+            return false;
+        if (!variable_visibility_) return true;
+        if (validIntegral.empty()) return false;
+        const double sum = validIntegral.at<double>(y1 + 1, x1 + 1) -
+                           validIntegral.at<double>(y0, x1 + 1) -
+                           validIntegral.at<double>(y1 + 1, x0) +
+                           validIntegral.at<double>(y0, x0);
+        return sum == 255.0 * (x1 - x0 + 1) * (y1 - y0 + 1);
+    };
 
     // 每个角度独立记录最优结果，最后一次归约，避免逐像素全局锁竞争。
     const int angle_count = static_cast<int>(shape_info_vec->shape_angle.size());
@@ -374,6 +398,7 @@ void SearchTemplate::_fineMatching(
     std::vector<int> best_x(angle_count, 0);
     std::vector<int> best_y(angle_count, 0);
     std::vector<double> best_visible(angle_count, 0.0);
+    std::vector<double> best_matched(angle_count, 0.0);
 
     int limit_angle; // 0-左限位越界 1-左右限均不越界 2-右限位越界
     // start_angle 左限位越界
@@ -436,8 +461,8 @@ void SearchTemplate::_fineMatching(
         // 计算模板点的边界框以调整搜索区域，避免边界检查
         int min_dx = INT_MAX, max_dx = INT_MIN, min_dy = INT_MAX, max_dy = INT_MIN;
         for (int mm = 0; mm < point_size; ++mm) {
-            int dx = shape_angle->shape_point[mm].x;
-            int dy = shape_angle->shape_point[mm].y;
+            int dx = cvRound(shape_angle->shape_point[mm].x);
+            int dy = cvRound(shape_angle->shape_point[mm].y);
             min_dx = std::min(min_dx, dx);
             max_dx = std::max(max_dx, dx);
             min_dy = std::min(min_dy, dy);
@@ -453,7 +478,8 @@ void SearchTemplate::_fineMatching(
         std::vector<int> rel_offsets(point_size);
         std::vector<float> tmpl_dx(point_size), tmpl_dy(point_size);
         for (int mm = 0; mm < point_size; ++mm) {
-            rel_offsets[mm] = shape_angle->shape_point[mm].y * width + shape_angle->shape_point[mm].x;
+            rel_offsets[mm] = cvRound(shape_angle->shape_point[mm].y) * width +
+                              cvRound(shape_angle->shape_point[mm].x);
             tmpl_dx[mm] = shape_angle->shape_point[mm].edge_dx;
             tmpl_dy[mm] = shape_angle->shape_point[mm].edge_dy;
         }
@@ -461,126 +487,131 @@ void SearchTemplate::_fineMatching(
         int TempPiontX = 0;
         int TempPiontY = 0;
         double bestVisibleRatio = 0.0;
+        double bestMatchedRatio = 0.0;
 
-        float anMinScore = min_score - 1;
-        float NormMinScore = min_score / point_size;
-        float NormGreediness = ((1 - greediness * min_score) / (1 - greediness)) / point_size; //计算贪婪数
+        const float normalizedMinScore = min_score / point_size;
+        const float normalizedGreediness = greediness < 1.0f
+            ? ((1.0f - greediness * min_score) / (1.0f - greediness)) / point_size
+            : 0.0f;
+
         for (int i = adj_start_X; i < adj_end_X; i += ijstep)
         {
             for (int j = adj_start_Y; j < adj_end_Y; j += ijstep)
             {
                 float PartialSum = 0; //初始化相似性度量分数
-                int SumOfCoords = 0;
                 float PartialScore = 0;
                 int visibleCount = 0;
 
-                int base = j * width + i;
-
-                if (!useSIMD) {
-                    // 普通模式：逐点计算，无需边界检查（因调整了搜索区域）
-                    for (int m = 0; m < point_size; m++)
+                int matchedCount = 0;
+                bool cannotReachBest = false;
+                bool rejectedByGreediness = false;
+                const bool fixedDenominator = rectangleIsVisible(
+                    i + min_dx, j + min_dy, i + max_dx, j + max_dy);
+                const bool fastSIMD = useSIMD && fixedDenominator &&
+                                      search_min_contrast_ == 0 &&
+                                      metric_ == I_I::USE_POLARITY;
+                if (fastSIMD)
+                {
+                    const __m256 zero = _mm256_setzero_ps();
+                    const __m256 lower = _mm256_set1_ps(-1.0f);
+                    const __m256 upper = _mm256_set1_ps(1.0f);
+                    const int base = j * width + i;
+                    int m = 0;
+                    for (; m + 7 < point_size; m += 8)
                     {
-                        /*
-                        curX = i + shape_angle->shape_point[m].x; //模板X坐标
-                        curY = j + shape_angle->shape_point[m].y; //模板Y坐标
-                        int offSet = curY * width + curX;
-                        =>
-                            offSet = (j + shape_angle->shape_point[m].y) * width + (i + shape_angle->shape_point[m].x)
-                        =>
-                            offset = [j * width + i] + [shape_angle->shape_point[m].y * width + shape_angle->shape_point[m].x]
-                            offset = base + rel_offsets[m]
-                        */
-                        const int curX = i + static_cast<int>(shape_angle->shape_point[m].x);
-                        const int curY = j + static_cast<int>(shape_angle->shape_point[m].y);
-                        if (curX < 0 || curX >= width || curY < 0 || curY >= height) continue;
-                        ++visibleCount;
-                        int offSet = curY * width + curX;
-                        float iTx = tmpl_dx[m]; //模板X方向的梯度
-                        float iTy = tmpl_dy[m]; //模板Y方向的梯度
-                        float iSx = pBufGradX_new[offSet]; //从搜索图像中获取对应的X梯度
-                        float iSy = pBufGradY_new[offSet]; //从搜索图像中获取对应的Y梯度
-
-                        //排除梯度为0的点
-                        if ((iSx != 0.0f || iSy != 0.0f) && (iTx != 0.0f || iTy != 0.0f))
+                        const __m256i relative = _mm256_loadu_si256(
+                            reinterpret_cast<const __m256i*>(&rel_offsets[m]));
+                        const __m256i offsets = _mm256_add_epi32(
+                            _mm256_set1_epi32(base), relative);
+                        const __m256 sx = _mm256_i32gather_ps(
+                            pBufGradX_new.data(), offsets, sizeof(float));
+                        const __m256 sy = _mm256_i32gather_ps(
+                            pBufGradY_new.data(), offsets, sizeof(float));
+                        const __m256 valid = _mm256_or_ps(
+                            _mm256_cmp_ps(sx, zero, _CMP_NEQ_OQ),
+                            _mm256_cmp_ps(sy, zero, _CMP_NEQ_OQ));
+                        __m256 dot = _mm256_add_ps(
+                            _mm256_mul_ps(sx, _mm256_loadu_ps(&tmpl_dx[m])),
+                            _mm256_mul_ps(sy, _mm256_loadu_ps(&tmpl_dy[m])));
+                        dot = _mm256_max_ps(lower, _mm256_min_ps(upper, dot));
+                        PartialSum += hsum_ps_avx(_mm256_and_ps(valid, dot));
+                        matchedCount += __builtin_popcount(
+                            static_cast<unsigned>(_mm256_movemask_ps(valid)));
+                        const int processed = m + 8;
+                        const int remaining = point_size - processed;
+                        if ((PartialSum + remaining) / point_size <= resultscore)
                         {
-                            PartialSum += ((iSx * iTx) + (iSy * iTy))/** (iTm * iSm)*/; // 计算相似度
-                        }
-                        SumOfCoords = visibleCount;
-                        PartialScore = PartialSum / SumOfCoords; // 归一化
-                        //===================================================================================
-                        // 终止策略
-                        // Sm<MIN((Smin-1+(1-g*Smin)/(1-g)*(m/n)),(Smin*m/n))
-                        //===================================================================================
-                        if (min_visible_ratio_ >= 1.0 &&
-                            PartialScore < (MIN(anMinScore + NormGreediness * SumOfCoords, NormMinScore * SumOfCoords)))
+                            cannotReachBest = true;
                             break;
-                    } //遍历完毕<特征点数>
-                } else {
-                    // SIMD模式：使用AVX2向量化计算，每8个点一组处理
-                    __m256 zero = _mm256_setzero_ps();
-                    for (int m = 0; m < point_size; m += 8) {
-                        int step = std::min(8, point_size - m);
-
-                        if (step != 8) {
-                            // 对于尾部，使用标量处理
-                            for (int mm = m; mm < m + step; ++mm) {
-                                int offSet = base + rel_offsets[mm];
-                                float iTx = tmpl_dx[mm];
-                                float iTy = tmpl_dy[mm];
-                                float iSx = pBufGradX_new[offSet];
-                                float iSy = pBufGradY_new[offSet];
-
-                                if ((iSx != 0.0f || iSy != 0.0f) && (iTx != 0.0f || iTy != 0.0f)) {
-                                    PartialSum += (iSx * iTx) + (iSy * iTy);
-                                }
-                                ++SumOfCoords;
-                                PartialScore = PartialSum / SumOfCoords;
-                                if (PartialScore < (std::min(anMinScore + NormGreediness * SumOfCoords, NormMinScore * SumOfCoords)))
-                                    goto early_exit; // 跳出整个循环
-                            }
-                            continue;
                         }
-
-                        // 加载模板梯度
-                        __m256 tx = _mm256_loadu_ps(&tmpl_dx[m]);
-                        __m256 ty = _mm256_loadu_ps(&tmpl_dy[m]);
-
-                        // 加载相对偏移
-                        __m256i rel_off = _mm256_loadu_si256((const __m256i*)&rel_offsets[m]);
-
-                        // 计算绝对偏移
-                        __m256i abs_off = _mm256_add_epi32(_mm256_set1_epi32(base), rel_off);
-
-                        // Gather图像梯度
-                        __m256 sx = _mm256_i32gather_ps(pBufGradX_new.data(), abs_off, sizeof(float));
-                        __m256 sy = _mm256_i32gather_ps(pBufGradY_new.data(), abs_off, sizeof(float));
-
-                        // 计算非零掩码
-                        __m256 mask_s = _mm256_or_ps(_mm256_cmp_ps(sx, zero, _CMP_NEQ_OQ), _mm256_cmp_ps(sy, zero, _CMP_NEQ_OQ));
-                        __m256 mask_t = _mm256_or_ps(_mm256_cmp_ps(tx, zero, _CMP_NEQ_OQ), _mm256_cmp_ps(ty, zero, _CMP_NEQ_OQ));
-                        __m256 mask = _mm256_and_ps(mask_s, mask_t);
-
-                        // 计算点积
-                        __m256 dot = _mm256_add_ps(_mm256_mul_ps(sx, tx), _mm256_mul_ps(sy, ty));
-
-                        // 应用掩码
-                        dot = _mm256_and_ps(mask, dot);
-
-                        // 水平求和并累加到PartialSum
-                        PartialSum += hsum_ps_avx(dot);
-
-                        // 更新计数
-                        SumOfCoords += 8;
-
-                        // 计算分数并检查终止
-                        PartialScore = PartialSum / SumOfCoords;
-                        if (PartialScore < (std::min(anMinScore + NormGreediness * SumOfCoords, NormMinScore * SumOfCoords)))
-                            goto early_exit;
-                    }// 遍历完毕<特征点数>
-                }// <SIMD/普通模式>选择结束
-early_exit:
+                    }
+                    for (; !cannotReachBest && m < point_size; ++m)
+                    {
+                        const int offset = base + rel_offsets[m];
+                        const float sx = pBufGradX_new[offset];
+                        const float sy = pBufGradY_new[offset];
+                        if (sx == 0.0f && sy == 0.0f) continue;
+                        ++matchedCount;
+                        float dot = sx * tmpl_dx[m] + sy * tmpl_dy[m];
+                        PartialSum += std::max(-1.0f, std::min(1.0f, dot));
+                    }
+                    visibleCount = point_size;
+                }
+                else
+                {
+                    for (int m = 0; m < point_size; ++m)
+                    {
+                        const int curX = i + cvRound(shape_angle->shape_point[m].x);
+                        const int curY = j + cvRound(shape_angle->shape_point[m].y);
+                        if (curX < 0 || curX >= width || curY < 0 || curY >= height) continue;
+                        if (mask_image.at<unsigned char>(curY, curX) != 255) continue;
+                        ++visibleCount;
+                        const int offset = curY * width + curX;
+                        const bool hasGradient = pBufGradX_new[offset] != 0.0f ||
+                                                 pBufGradY_new[offset] != 0.0f;
+                        if (hasGradient)
+                        {
+                            ++matchedCount;
+                            float dot = pBufGradX_new[offset] * tmpl_dx[m] +
+                                        pBufGradY_new[offset] * tmpl_dy[m];
+                            dot = std::max(-1.0f, std::min(1.0f, dot));
+                            PartialSum += metric_ == I_I::IGNORE_LOCAL_POLARITY ? std::abs(dot) : dot;
+                        }
+                        const float partialScore = PartialSum / visibleCount;
+                        if (!variable_visibility_ && metric_ == I_I::USE_POLARITY &&
+                            greediness < 1.0f &&
+                            partialScore < std::min(min_score - 1.0f +
+                                                       normalizedGreediness * visibleCount,
+                                                   normalizedMinScore * visibleCount))
+                        {
+                            rejectedByGreediness = true;
+                            break;
+                        }
+                        if (fixedDenominator)
+                        {
+                            const int remaining = point_size - m - 1;
+                            const double upperNumerator = metric_ == I_I::IGNORE_GLOBAL_POLARITY
+                                ? std::abs(static_cast<double>(PartialSum)) + remaining
+                                : static_cast<double>(PartialSum) + remaining;
+                            if (upperNumerator / point_size <= resultscore)
+                            {
+                                cannotReachBest = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (cannotReachBest || rejectedByGreediness) continue;
+                if (visibleCount > 0)
+                {
+                    const double raw = PartialSum / visibleCount;
+                    PartialScore = metric_ == I_I::IGNORE_GLOBAL_POLARITY ? std::abs(raw) : raw;
+                    PartialScore = std::max(0.0f, std::min(1.0f, PartialScore));
+                }
                 const double visibleRatio = point_size > 0
                                                 ? static_cast<double>(visibleCount) / point_size : 0.0;
+                const double matchedRatio = visibleCount > 0
+                                                ? static_cast<double>(matchedCount) / visibleCount : 0.0;
                 // 每个角度循环只由一个工作线程处理，局部更新无需加锁。
                 if (visibleRatio >= min_visible_ratio_ && PartialScore > resultscore)
                 {
@@ -588,6 +619,7 @@ early_exit:
                     TempPiontX = i; // 坐标X结果值
                     TempPiontY = j; //  坐标Y结果值
                     bestVisibleRatio = visibleRatio;
+                    bestMatchedRatio = matchedRatio;
                 }
             } // 遍历完毕<搜索区域y>
         } // 遍历完毕<搜索区域x>
@@ -596,6 +628,7 @@ early_exit:
         best_x[k] = TempPiontX;
         best_y[k] = TempPiontY;
         best_visible[k] = bestVisibleRatio;
+        best_matched[k] = bestMatchedRatio;
     } // 遍历完毕<角度数量>
 
     float best_score = 0.0f;
@@ -609,6 +642,7 @@ early_exit:
             result_list->pose.y = best_y[k];
             result_list->pose.angle = shape_info_vec->shape_angle[k]->angle;
             result_list->visible_ratio = best_visible[k];
+            result_list->matched_ratio = best_matched[k];
         }
     }
 }
@@ -636,22 +670,41 @@ void SearchTemplate::_coarseMatching(
     // 定义存储用中间变量dx/dy
     std::vector<float> pBufGradX(bufferSize); //存取x方向偏导数Gx
     std::vector<float> pBufGradY(bufferSize); //存取y方向偏导数Gy
+    std::vector<float> pBufMagnitude;
 
     std::vector<T_T::MatchResult> totalResultsTemp, resultsfilter;
     std::mutex locker;
 
     // 提取sobel梯度信息
-    _getFeature(search_image, mask_image, width, height, pBufGradX, pBufGradY, true);
+    _getFeature(search_image, mask_image, width, height, pBufGradX, pBufGradY,
+                pBufMagnitude, true);
+
+    cv::Mat validMask, validIntegral;
+    if (variable_visibility_)
+    {
+        cv::compare(mask_image, cv::Scalar(255), validMask, cv::CMP_EQ);
+        cv::integral(validMask, validIntegral, CV_64F);
+    }
+    const auto rectangleIsVisible = [&](int x0, int y0, int x1, int y1) {
+        if (validIntegral.empty()) return false;
+        if (x0 < 0 || y0 < 0 || x1 >= width || y1 >= height || x0 > x1 || y0 > y1)
+            return false;
+        const double sum = validIntegral.at<double>(y1 + 1, x1 + 1) -
+                           validIntegral.at<double>(y0, x1 + 1) -
+                           validIntegral.at<double>(y1 + 1, x0) +
+                           validIntegral.at<double>(y0, x0);
+        return sum == 255.0 * (x1 - x0 + 1) * (y1 - y0 + 1);
+    };
 
     //相似度计算
     int k_size = shape_info_vec->shape_angle.size();
-#if !DEBUG_SHOW
+#if !SHAPE_MATCH_VISUALIZE_COARSE
 #pragma omp parallel for num_threads(thread_num_)
 #endif
     for (int k = 0; k < k_size; k++) //角度数量
     {
         auto shape_angle = shape_info_vec->shape_angle[k];
-        auto point_size = shape_angle->shape_point.size();
+        const int point_size = static_cast<int>(shape_angle->shape_point.size());
         //过滤角度不在待搜索范围的匹配运算
         if (shape_angle->angle < search_region.start_angle || shape_angle->angle > search_region.stop_angle)
         {
@@ -662,10 +715,10 @@ void SearchTemplate::_coarseMatching(
         //每个角度下粗匹配过近，则选得分较大者{筛选1}：resultsPerDegCandidates
         std::vector<T_T::MatchResult> resultsPerDeg, resultsPerDegCandidates;
 
-        // for循环内终止策略使用的变量
-        float anMinScore = min_score - 1;
-        float NormMinScore = min_score / point_size;
-        float NormGreediness = ((1 - greediness * min_score) / (1 - greediness)) / point_size; //计算贪婪数
+        const float normalizedMinScore = min_score / point_size;
+        const float normalizedGreediness = greediness < 1.0f
+            ? ((1.0f - greediness * min_score) / (1.0f - greediness)) / point_size
+            : 0.0f;
 
         // 更新搜索区域(根据不同角度模板进行搜索)
         // 不同角度下模板特征的外包络框大小不一致
@@ -685,6 +738,12 @@ void SearchTemplate::_coarseMatching(
                 float PartialSum = 0; //初始化相似性度量分数
                 int SumOfCoords = 0;
                 int visibleCount = 0;
+                int matchedCount = 0;
+                bool cannotReachThreshold = false;
+                bool rejectedByGreediness = false;
+                const bool fixedDenominator = rectangleIsVisible(
+                    i + shape_angle->bbx.lt_x, j + shape_angle->bbx.lt_y,
+                    i + shape_angle->bbx.rb_x, j + shape_angle->bbx.rb_y);
 
                 for (int m = 0; m < point_size; m++) //某角度下的特征点数量
                 {
@@ -696,13 +755,14 @@ void SearchTemplate::_coarseMatching(
                     float iSx = 0;
                     float iSy = 0;
 
-                    curX = i + shape_angle->shape_point[m].x; //模板X坐标
-                    curY = j + shape_angle->shape_point[m].y; //模板Y坐标
+                    curX = i + cvRound(shape_angle->shape_point[m].x); //模板X坐标
+                    curY = j + cvRound(shape_angle->shape_point[m].y); //模板Y坐标
 
                     if (curX < 0 || curY < 0 || curX > width - 1 || curY > height - 1)
                     {
                         continue; //如果模板超出搜索图像边界范围，跳出继续，加速
                     }
+                    if (mask_image.at<unsigned char>(curY, curX) != 255) continue;
                     ++visibleCount;
                     iTx = shape_angle->shape_point[m].edge_dx; //模板X方向的梯度
                     iTy = shape_angle->shape_point[m].edge_dy; //模板Y方向的梯度
@@ -712,34 +772,66 @@ void SearchTemplate::_coarseMatching(
                     iSy = pBufGradY[offSet]; //从搜索图像中获取对应的Y梯度
 
                     //排除梯度为0的点
-                    if ((iSx != 0.0f || iSy != 0.0f) && (iTx != 0.0f || iTy != 0.0f))
+                    const bool hasGradient = iSx != 0.0f || iSy != 0.0f;
+                    if (hasGradient && (iTx != 0.0f || iTy != 0.0f))
                     {
                         //===================================================================================
                         // 相似性度量公式
                         //===================================================================================
-                        PartialSum += ((iSx * iTx) + (iSy * iTy)) /* * (iSm * iTm)*/; // 计算相似度
+                        ++matchedCount;
+                        float dot = std::max(-1.0f, std::min(1.0f,
+                            iSx * iTx + iSy * iTy));
+                        PartialSum += metric_ == I_I::IGNORE_LOCAL_POLARITY
+                                          ? std::abs(dot) : dot;
                     }
                     SumOfCoords = visibleCount;
                     PartialScore = PartialSum / SumOfCoords; // 归一化
 
-                    //===================================================================================
-                    // 终止策略
-                    //===================================================================================
-                    if (min_visible_ratio_ >= 1.0 &&
-                        PartialScore < (MIN(anMinScore + NormGreediness * SumOfCoords, NormMinScore * SumOfCoords)))
+                    // Preserve the documented greediness/speed tradeoff for the
+                    // legacy polarity metric, but only where the denominator is
+                    // known. Partial and masked candidates always use the strict
+                    // bound below and can therefore not be discarded heuristically.
+                    if (!variable_visibility_ && metric_ == I_I::USE_POLARITY && greediness < 1.0f &&
+                        PartialScore < std::min(min_score - 1.0f +
+                                                   normalizedGreediness * SumOfCoords,
+                                               normalizedMinScore * SumOfCoords))
                     {
+                        rejectedByGreediness = true;
                         break;
+                    }
+
+                    // Strict score upper bound. This is only valid when the complete
+                    // model bounding box lies in the valid mask, hence V is known to
+                    // equal N before all points have been visited.
+                    if (fixedDenominator)
+                    {
+                        const int remaining = point_size - m - 1;
+                        const double upperNumerator = metric_ == I_I::IGNORE_GLOBAL_POLARITY
+                            ? std::abs(static_cast<double>(PartialSum)) + remaining
+                            : static_cast<double>(PartialSum) + remaining;
+                        if (upperNumerator / point_size <= min_score)
+                        {
+                            cannotReachThreshold = true;
+                            break;
+                        }
                     }
                 }
 
+                if (cannotReachThreshold || rejectedByGreediness) continue;
+
                 const double visibleRatio = point_size > 0
                                                 ? static_cast<double>(visibleCount) / point_size : 0.0;
+                if (metric_ == I_I::IGNORE_GLOBAL_POLARITY) PartialScore = std::abs(PartialScore);
+                PartialScore = std::max(0.0f, std::min(1.0f, PartialScore));
+                const double matchedRatio = visibleCount > 0
+                                                ? static_cast<double>(matchedCount) / visibleCount : 0.0;
                 if (visibleRatio >= min_visible_ratio_ && PartialScore > min_score)
                 {
                     resultsPerDeg.push_back(T_T::MatchResult(
-                        T_T::Pose2d(i, j, shape_angle->angle), PartialScore, 1.0, -1, visibleRatio));
+                        T_T::Pose2d(i, j, shape_angle->angle), PartialScore, 1.0, -1,
+                        visibleRatio, matchedRatio));
                 } // if 语句:大于最小得分值
-#if DEBUG_COARSE_SHOW
+#if SHAPE_MATCH_VISUALIZE_COARSE
                 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~绘制匹配过程~~~~~~~~~~~~~~~~~~~~~~~~~~~~
                 cv::Mat search_image_back;
                 cv::cvtColor(search_image,search_image_back,cv::COLOR_GRAY2BGR);
@@ -928,7 +1020,7 @@ bool SearchTemplate::_coarse2FineMatching(
     // 待测图像精匹配
     _fineMatching(cropImage, cropMask, pInfoPy, py_levels, cropImgW, cropImgH, min_score, greediness, SearchRegion,
                   result_list_low,false);
-#if DEBUG_SHOW
+#if SHAPE_MATCH_VISUALIZE_FINE
     cv::Mat cropImageBGR;
     cv::cvtColor(cropImage, cropImageBGR, cv::COLOR_GRAY2BGR);
     //绘制匹配上的轮廓点
@@ -1007,6 +1099,14 @@ bool SearchTemplate::searchTemplate(
                           sort_by_y, T_T::ScaleSearchCfg(), result_list);
 }
 
+namespace
+{
+void refineSubpixelPosition(T_T::MatchResult& result, const T_T::ShapeInfo::Ptr& shapeInfo,
+                            const cv::Mat& image, const cv::Mat& mask,
+                            double minVisibleRatio, int minContrast, I_I::Metric metric,
+                            double angleStep, double angleStart, double angleEnd);
+}
+
 // 单尺度匹配内核，由公开重载统一调用。
 bool SearchTemplate::_searchTemplateSingleScale(
     cv::Mat image,
@@ -1065,23 +1165,35 @@ bool SearchTemplate::_searchTemplateSingleScale(
         cv::Mat ImgBordered = Image, MaskBordered = smaskimage;
         int top = 0, bottom = 0, left = 0, right = 0;
 
-        // 待测图长、宽不为16的倍数：图像的长宽边进行扩展
+        // 对齐金字塔尺寸；部分可见搜索还需把模板中心的搜索域扩展到图外。
         const int pyramid_alignment = 1 << num_levels;
-        if ((Image.cols % pyramid_alignment != 0) || (Image.rows % pyramid_alignment != 0))
+        const int BorderedWidth = ((Image.cols + pyramid_alignment - 1) /
+                                   pyramid_alignment) * pyramid_alignment;
+        const int BorderedHeight = ((Image.rows + pyramid_alignment - 1) /
+                                    pyramid_alignment) * pyramid_alignment;
+        const int x2Offset = BorderedWidth - Image.cols;
+        const int y2Offset = BorderedHeight - Image.rows;
+        const int requiredMargin = min_visible_ratio_ < 1.0
+            ? static_cast<int>(std::ceil(std::hypot(model_id->template_cfg.image_width,
+                                                    model_id->template_cfg.image_height) * 0.5)) + 2
+            : 0;
+        const int partialMargin = ((requiredMargin + pyramid_alignment - 1) /
+                                   pyramid_alignment) * pyramid_alignment;
+        top = (y2Offset + 1) / 2 + partialMargin;
+        bottom = y2Offset / 2 + partialMargin;
+        left = (x2Offset + 1) / 2 + partialMargin;
+        right = x2Offset / 2 + partialMargin;
+
+        if (top > 0 || bottom > 0 || left > 0 || right > 0)
         {
-            int BorderedWidth = ((Image.cols + pyramid_alignment - 1) / pyramid_alignment) * pyramid_alignment;
-            int BorderedHeight = ((Image.rows + pyramid_alignment - 1) / pyramid_alignment) * pyramid_alignment;
-            int y2Offset = BorderedHeight - Image.rows;
-            int x2Offset = BorderedWidth  - Image.cols;
-
-            top    = (y2Offset + 1) / 2;
-            bottom = y2Offset / 2;
-            left   = (x2Offset + 1) / 2;
-            right  = x2Offset / 2;
-
-            cv::copyMakeBorder(Image, ImgBordered, top, bottom, left, right, cv::BORDER_REPLICATE);
-            cv::copyMakeBorder(smaskimage, MaskBordered, top, bottom, left, right, cv::BORDER_REPLICATE);
-        } // 结束：对输入图像和掩模的填充操作，按长短边的 2^n（n>=4）扩展
+            // Replicate intensity to avoid an artificial gradient at the image
+            // boundary. The zero-padded mask below still excludes all pixels
+            // outside the original image from visibility and scoring.
+            cv::copyMakeBorder(Image, ImgBordered, top, bottom, left, right,
+                               cv::BORDER_REPLICATE);
+            cv::copyMakeBorder(smaskimage, MaskBordered, top, bottom, left, right,
+                               cv::BORDER_CONSTANT, cv::Scalar(0));
+        }
         else
         {
             ImgBordered = Image;
@@ -1146,8 +1258,8 @@ bool SearchTemplate::_searchTemplateSingleScale(
             HeightPy,
             modelwidth,
             modelheight,
-            Left,
-            Top,
+            min_visible_ratio_ < 1.0 ? 0 : Left,
+            min_visible_ratio_ < 1.0 ? 0 : Top,
             coarse_min_score,
             greediness,
             max_overlap,
@@ -1159,7 +1271,7 @@ bool SearchTemplate::_searchTemplateSingleScale(
         std::cout << "Coarse matching time: " << duration_coarse.count() << " ms." << std::endl;
 #endif
 
-#if DEBUG_SHOW
+#if SHAPE_MATCH_VISUALIZE_COARSE
         printf("Coarse matching result count: %ld\n", ResultListPyRude.size());
         cv::Mat pImageBGR;
         cv::cvtColor(pImage, pImageBGR, cv::COLOR_GRAY2BGR);
@@ -1194,7 +1306,7 @@ bool SearchTemplate::_searchTemplateSingleScale(
             }
         }
         cv::putText(
-            pImageBGR, "Py" + std::to_string(Numpyl), cv::Point2f(pImageBGR.cols / 2, 10), cv::FONT_HERSHEY_DUPLEX, 0.5,
+            pImageBGR, "Py" + std::to_string(num_levels), cv::Point2f(pImageBGR.cols / 2, 10), cv::FONT_HERSHEY_DUPLEX, 0.5,
             cv::Scalar(0, 255, 0));
         cv::putText(
             pImageBGR,
@@ -1214,7 +1326,7 @@ bool SearchTemplate::_searchTemplateSingleScale(
 #if COSTTIME_SHOW
         auto start_fine = std::chrono::high_resolution_clock::now();
 #endif
-#if !DEBUG_SHOW
+#if !SHAPE_MATCH_VISUALIZE_FINE
 #pragma omp parallel for num_threads(thread_num_)
 #endif
         for (int ri = 0; ri < ResultListPyRude.size(); ri++) //获取金字塔最高层所有的粗匹配结果:ResultListPyRude
@@ -1254,15 +1366,15 @@ bool SearchTemplate::_searchTemplateSingleScale(
                 //由padding图上的结果还原至原图上的结果(左扩边界left,上扩边界top)
                 T_T::MatchResult Po{
                     T_T::Pose2d(ResultListLow.pose.x - left, ResultListLow.pose.y - top, ResultListLow.pose.angle),
-                    ResultListLow.score, 1.0, -1, ResultListLow.visible_ratio
+                    ResultListLow.score, 1.0, -1, ResultListLow.visible_ratio,
+                    ResultListLow.matched_ratio
                 };
-                if (Po.pose.x >= 0 && Po.pose.y >= 0 && Po.pose.x <= Image.cols && Po.pose.y <= Image.rows)
-                    if (Po.pose.x >= 0 && Po.pose.y >= 0 && Po.pose.x <= Image.cols && Po.pose.y <= Image.rows)
-                    {
-                        locker.lock();
-                        TempResult.push_back(Po);
-                        locker.unlock();
-                    }
+                // A valid partial target may have its geometric center outside the
+                // image. Visibility and score already describe whether enough of
+                // the template is present, so rejecting an out-of-image center
+                // incorrectly drops legitimate border matches.
+                std::lock_guard<std::mutex> resultGuard(locker);
+                TempResult.push_back(Po);
             }
         } // 结束：遍历最高层金字塔的所有候选结果 [OMP]
 #if COSTTIME_SHOW
@@ -1279,6 +1391,23 @@ bool SearchTemplate::_searchTemplateSingleScale(
         //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
         findResult = _filterMaxOverLapCandidates(TempResult, max_overlap, model_id->template_cfg.image_height,
                                                  model_id->template_cfg.image_width);
+
+        // Refine only candidates that survived NMS. Performing six bilinear score
+        // evaluations for every coarse candidate would erase the benefit of the
+        // integer/SIMD search path.
+        if (subpixel_refine_)
+        for (auto& candidate : findResult)
+        {
+            candidate.pose.x += left;
+            candidate.pose.y += top;
+            refineSubpixelPosition(candidate, model_id->templates[0],
+                                   ImgBordered, MaskBordered, min_visible_ratio_,
+                                   search_min_contrast_, metric_,
+                                   model_id->template_cfg.angle_step,
+                                   start_angle_, stop_angle_);
+            candidate.pose.x -= left;
+            candidate.pose.y -= top;
+        }
 
         //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
         //+++++++++++++++++++++++++待测图像目标点排序筛选剔除+++++++++++++++++++++++++++++
@@ -1369,7 +1498,170 @@ bool validScaleCfg(const T_T::ScaleSearchCfg& cfg)
            std::isfinite(cfg.scale_step) && std::isfinite(cfg.min_visible_ratio) &&
            cfg.scale_min > 0.0 &&
            cfg.scale_max >= cfg.scale_min && cfg.scale_step > 0.0 &&
-           cfg.min_visible_ratio > 0.0 && cfg.min_visible_ratio <= 1.0;
+           cfg.min_visible_ratio > 0.0 && cfg.min_visible_ratio <= 1.0 &&
+           cfg.min_contrast >= 0 && cfg.min_contrast <= 361 &&
+           (cfg.metric == I_I::USE_POLARITY ||
+            cfg.metric == I_I::IGNORE_LOCAL_POLARITY ||
+            cfg.metric == I_I::IGNORE_GLOBAL_POLARITY);
+}
+
+bool bilinearNormalizedGradient(const cv::Mat& image, double x, double y,
+                                float& gradientX, float& gradientY, float& rawMagnitude,
+                                int minContrast)
+{
+    if (x < 1.0 || y < 1.0 || x >= image.cols - 2.0 || y >= image.rows - 2.0)
+        return false;
+    const int x0 = static_cast<int>(std::floor(x));
+    const int y0 = static_cast<int>(std::floor(y));
+    const float ax = static_cast<float>(x - x0);
+    const float ay = static_cast<float>(y - y0);
+    float gx[4], gy[4], magnitudes[4];
+    int index = 0;
+    for (int yy = 0; yy <= 1; ++yy)
+        for (int xx = 0; xx <= 1; ++xx, ++index)
+        {
+            const int px = x0 + xx;
+            const int py = y0 + yy;
+            const float dx = static_cast<float>(image.at<unsigned char>(py, px + 1)) -
+                             image.at<unsigned char>(py, px - 1);
+            const float dy = static_cast<float>(image.at<unsigned char>(py + 1, px)) -
+                             image.at<unsigned char>(py - 1, px);
+            const float magnitude = std::sqrt(dx * dx + dy * dy);
+            magnitudes[index] = magnitude;
+            gx[index] = magnitude > 1e-6f ? dx / magnitude : 0.0f;
+            gy[index] = magnitude > 1e-6f ? dy / magnitude : 0.0f;
+        }
+    gradientX = (1.0f - ay) * ((1.0f - ax) * gx[0] + ax * gx[1]) +
+                ay * ((1.0f - ax) * gx[2] + ax * gx[3]);
+    gradientY = (1.0f - ay) * ((1.0f - ax) * gy[0] + ax * gy[1]) +
+                ay * ((1.0f - ax) * gy[2] + ax * gy[3]);
+    rawMagnitude = (1.0f - ay) * ((1.0f - ax) * magnitudes[0] + ax * magnitudes[1]) +
+                   ay * ((1.0f - ax) * magnitudes[2] + ax * magnitudes[3]);
+    if (!(rawMagnitude > 1e-6f && rawMagnitude >= static_cast<float>(minContrast)))
+        gradientX = gradientY = 0.0f;
+    return true;
+}
+
+struct SubpixelScore
+{
+    double score = -std::numeric_limits<double>::infinity();
+    double visible_ratio = 0.0;
+    double matched_ratio = 0.0;
+};
+
+SubpixelScore subpixelShapeScore(const T_T::ShapeAngle& shape,
+                          const cv::Mat& image, const cv::Mat& mask,
+                          double centerX, double centerY,
+                          double minVisibleRatio, int minContrast, I_I::Metric metric)
+{
+    SubpixelScore result;
+    double sum = 0.0;
+    size_t visible = 0;
+    size_t matched = 0;
+    const size_t sampleStep = std::max<size_t>(1, (shape.shape_point.size() + 511) / 512);
+    size_t sampled = 0;
+    for (size_t pointIndex = 0; pointIndex < shape.shape_point.size(); pointIndex += sampleStep)
+    {
+        const auto& point = shape.shape_point[pointIndex];
+        ++sampled;
+        const double x = centerX + point.x;
+        const double y = centerY + point.y;
+        const int nearestX = cvRound(x);
+        const int nearestY = cvRound(y);
+        if (nearestX < 0 || nearestX >= mask.cols || nearestY < 0 || nearestY >= mask.rows ||
+            mask.at<unsigned char>(nearestY, nearestX) != 255) continue;
+        ++visible;
+        float sx = 0.0f, sy = 0.0f, magnitude = 0.0f;
+        if (!bilinearNormalizedGradient(image, x, y, sx, sy, magnitude, minContrast) ||
+            (sx == 0.0f && sy == 0.0f)) continue;
+        ++matched;
+        double dot = std::max(-1.0, std::min(1.0,
+            static_cast<double>(sx * point.edge_dx + sy * point.edge_dy)));
+        sum += metric == I_I::IGNORE_LOCAL_POLARITY ? std::abs(dot) : dot;
+    }
+    result.visible_ratio = sampled ? static_cast<double>(visible) / sampled : 0.0;
+    result.matched_ratio = visible ? static_cast<double>(matched) / visible : 0.0;
+    if (sampled == 0 || static_cast<double>(visible) / sampled < minVisibleRatio || visible == 0)
+        return result;
+    double score = sum / visible;
+    if (metric == I_I::IGNORE_GLOBAL_POLARITY) score = std::abs(score);
+    result.score = std::max(0.0, std::min(1.0, score));
+    return result;
+}
+
+void refineSubpixelPosition(T_T::MatchResult& result, const T_T::ShapeInfo::Ptr& shapeInfo,
+                            const cv::Mat& image, const cv::Mat& mask,
+                            double minVisibleRatio, int minContrast, I_I::Metric metric,
+                            double angleStep, double angleStart, double angleEnd)
+{
+    if (!shapeInfo || shapeInfo->shape_angle.empty()) return;
+    const auto& canonical = *shapeInfo->shape_angle.front();
+    const auto rotatedShape = [&](double angle) {
+        T_T::ShapeAngle rotated;
+        rotated.angle = angle;
+        rotated.shape_point.reserve(canonical.shape_point.size());
+        const double radians = -angle * CV_PI / 180.0;
+        const double c = std::cos(radians), s = std::sin(radians);
+        for (const auto& source : canonical.shape_point)
+        {
+            T_T::ShapePoint point;
+            point.x = source.x * c + source.y * s;
+            point.y = -source.x * s + source.y * c;
+            point.edge_dx = static_cast<float>(source.edge_dx * c + source.edge_dy * s);
+            point.edge_dy = static_cast<float>(-source.edge_dx * s + source.edge_dy * c);
+            rotated.shape_point.push_back(point);
+        }
+        return rotated;
+    };
+    const auto score = [&](double x, double y, double angle) {
+        const T_T::ShapeAngle rotated = rotatedShape(angle);
+        return subpixelShapeScore(rotated, image, mask, x, y, minVisibleRatio,
+                                  minContrast, metric);
+    };
+    const T_T::MatchResult original = result;
+    double refinedAngle = result.pose.angle;
+    const SubpixelScore centerResult = score(result.pose.x, result.pose.y, refinedAngle);
+    const double center = centerResult.score;
+    if (!std::isfinite(center)) return;
+    const double h = std::max(0.25, std::min(5.0, std::abs(angleStep)));
+    if (refinedAngle - h >= angleStart && refinedAngle + h <= angleEnd)
+    {
+        const double before = score(result.pose.x, result.pose.y, refinedAngle - h).score;
+        const double after = score(result.pose.x, result.pose.y, refinedAngle + h).score;
+        const double denominator = before - 2.0 * center + after;
+        if (std::isfinite(before) && std::isfinite(after) && denominator < -1e-9)
+        {
+            const double delta = std::max(-0.75, std::min(0.75,
+                0.5 * (before - after) / denominator));
+            const double candidateAngle = refinedAngle + delta * h;
+            const SubpixelScore candidate = score(result.pose.x, result.pose.y, candidateAngle);
+            if (candidate.score + 1e-6 >= center) refinedAngle = candidateAngle;
+        }
+    }
+    const double angleCenter = score(result.pose.x, result.pose.y, refinedAngle).score;
+    const auto offset = [&](double before, double after) {
+        if (!std::isfinite(before) || !std::isfinite(after)) return 0.0;
+        const double denominator = before - 2.0 * angleCenter + after;
+        if (denominator >= -1e-9) return 0.0;
+        return std::max(-0.75, std::min(0.75, 0.5 * (before - after) / denominator));
+    };
+    const double dx = offset(score(result.pose.x - 1.0, result.pose.y, refinedAngle).score,
+                             score(result.pose.x + 1.0, result.pose.y, refinedAngle).score);
+    const double dy = offset(score(result.pose.x, result.pose.y - 1.0, refinedAngle).score,
+                             score(result.pose.x, result.pose.y + 1.0, refinedAngle).score);
+    const SubpixelScore refined = score(result.pose.x + dx, result.pose.y + dy, refinedAngle);
+    if (std::isfinite(refined.score) && refined.score + 1e-6 >= center)
+    {
+        result.pose.x += dx;
+        result.pose.y += dy;
+        result.pose.angle = refinedAngle;
+        // Keep the discrete match score stable: interpolation refines the pose,
+        // while its bilinear/sample-limited objective is only an internal optimizer.
+        result.score = original.score;
+        result.visible_ratio = refined.visible_ratio;
+        result.matched_ratio = refined.matched_ratio;
+    }
+    else result = original;
 }
 }
 
@@ -1409,7 +1701,15 @@ bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi
 
     std::vector<T_T::MatchResult> all;
     const double oldVisibleRatio = min_visible_ratio_;
+    const bool oldSubpixelRefine = subpixel_refine_;
+    const int oldSearchMinContrast = search_min_contrast_;
+    const I_I::Metric oldMetric = metric_;
+    const bool oldVariableVisibility = variable_visibility_;
     min_visible_ratio_ = scale_cfg.min_visible_ratio;
+    subpixel_refine_ = scale_cfg.subpixel_refine;
+    search_min_contrast_ = scale_cfg.min_contrast;
+    metric_ = static_cast<I_I::Metric>(scale_cfg.metric);
+    variable_visibility_ = scale_cfg.min_visible_ratio < 1.0 || !workMask.empty();
     const double epsilon = scale_cfg.scale_step * 1e-6;
     for (double scale = scale_cfg.scale_min; scale <= scale_cfg.scale_max + epsilon;
          scale += scale_cfg.scale_step)
@@ -1447,6 +1747,10 @@ bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi
         }
     }
     min_visible_ratio_ = oldVisibleRatio;
+    subpixel_refine_ = oldSubpixelRefine;
+    search_min_contrast_ = oldSearchMinContrast;
+    metric_ = oldMetric;
+    variable_visibility_ = oldVariableVisibility;
 
     std::sort(all.begin(), all.end(), [](const T_T::MatchResult& a, const T_T::MatchResult& b)
     {
@@ -1476,6 +1780,51 @@ bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi
             if (suppressed) break;
         }
         if (!suppressed) kept.push_back(candidate);
+    }
+
+    // HALCON-style interpolation in the scale dimension. The expensive image
+    // searches remain discrete; only NMS survivors are associated with the same
+    // spatial peak at the immediately adjacent scales and fitted quadratically.
+    if (scale_cfg.subpixel_refine &&
+        scale_cfg.scale_max - scale_cfg.scale_min >= 2.0 * scale_cfg.scale_step - epsilon)
+    {
+        const double spatialTolerance = std::max(
+            4.0, std::hypot(static_cast<double>(model_id->template_cfg.image_width),
+                            static_cast<double>(model_id->template_cfg.image_height)) *
+                     scale_cfg.scale_step * 1.5);
+        const double angleTolerance = std::max(5.0, model_id->template_cfg.angle_step * 3.0);
+        for (auto& candidate : kept)
+        {
+            const auto adjacent = [&](double wantedScale) -> const T_T::MatchResult* {
+                const T_T::MatchResult* best = nullptr;
+                double bestDistance = std::numeric_limits<double>::infinity();
+                for (const auto& sample : all)
+                {
+                    if (std::abs(sample.scale - wantedScale) > std::max(1e-6, epsilon)) continue;
+                    const double distance = std::hypot(sample.pose.x - candidate.pose.x,
+                                                       sample.pose.y - candidate.pose.y);
+                    if (distance > spatialTolerance ||
+                        std::abs(sample.pose.angle - candidate.pose.angle) > angleTolerance) continue;
+                    if (distance < bestDistance ||
+                        (std::abs(distance - bestDistance) < 1e-9 &&
+                         (!best || sample.score > best->score)))
+                    {
+                        best = &sample;
+                        bestDistance = distance;
+                    }
+                }
+                return best;
+            };
+            const T_T::MatchResult* lower = adjacent(candidate.scale - scale_cfg.scale_step);
+            const T_T::MatchResult* upper = adjacent(candidate.scale + scale_cfg.scale_step);
+            if (!lower || !upper) continue;
+            const double denominator = lower->score - 2.0 * candidate.score + upper->score;
+            if (denominator >= -1e-9) continue;
+            const double delta = std::max(-0.75, std::min(
+                0.75, 0.5 * (lower->score - upper->score) / denominator));
+            candidate.scale = std::max(scale_cfg.scale_min, std::min(
+                scale_cfg.scale_max, candidate.scale + delta * scale_cfg.scale_step));
+        }
     }
     if (num_matches >= 0 && kept.size() > static_cast<size_t>(num_matches))
         kept.resize(num_matches);
@@ -1787,7 +2136,7 @@ T_T::Template::Ptr SearchTemplate::loadModelFileFromJson(std::string path)
                 for (int j = 0; j < shape_size; j++) //轮廓点数量
                 {
                     //坐标x,y变化
-                    int rOrigX, rOrigY;
+                    double rOrigX, rOrigY;
                     float X, Y, T;
                     //通过坐标变化，将坐标原点0在左上角的图像坐标系转换为笛卡尔坐标系（原点在图像中心，x朝右，y朝上）
                     X = model_id_cp->templates[index]->shape_angle[0]->shape_point[j].x;
@@ -1796,8 +2145,8 @@ T_T::Template::Ptr SearchTemplate::loadModelFileFromJson(std::string path)
                     X = X * std::cos(rad) - Y * std::sin(rad); // 逆时针旋转
                     Y = T * std::sin(rad) + Y * std::cos(rad); // 逆时针旋转
 
-                    rOrigX = (X + xOffSet > 0.0) ? (X + xOffSet + 0.5) : (X + xOffSet - 0.5); //四舍五入取整数
-                    rOrigY = (yOffSet - Y > 0.0) ? (yOffSet - Y + 0.5) : (yOffSet - Y - 0.5); //四舍五入取整数
+                    rOrigX = X + xOffSet;
+                    rOrigY = yOffSet - Y;
 
                     float DX, DY, DT;
                     // dx,dy变换
@@ -1821,16 +2170,16 @@ T_T::Template::Ptr SearchTemplate::loadModelFileFromJson(std::string path)
             for (const auto& shape_angle : model_id_cp->templates[index]->shape_angle)
             {
                 if (shape_angle->shape_point.empty()) { continue; }
-                int min_x = static_cast<int>(shape_angle->shape_point[0].x);
-                int max_x = min_x;
-                int min_y = static_cast<int>(shape_angle->shape_point[0].y);
-                int max_y = min_y;
+                int min_x = static_cast<int>(std::floor(shape_angle->shape_point[0].x));
+                int max_x = static_cast<int>(std::ceil(shape_angle->shape_point[0].x));
+                int min_y = static_cast<int>(std::floor(shape_angle->shape_point[0].y));
+                int max_y = static_cast<int>(std::ceil(shape_angle->shape_point[0].y));
                 for (const auto& point : shape_angle->shape_point)
                 {
-                    min_x = std::min(min_x, static_cast<int>(point.x));
-                    max_x = std::max(max_x, static_cast<int>(point.x));
-                    min_y = std::min(min_y, static_cast<int>(point.y));
-                    max_y = std::max(max_y, static_cast<int>(point.y));
+                    min_x = std::min(min_x, static_cast<int>(std::floor(point.x)));
+                    max_x = std::max(max_x, static_cast<int>(std::ceil(point.x)));
+                    min_y = std::min(min_y, static_cast<int>(std::floor(point.y)));
+                    max_y = std::max(max_y, static_cast<int>(std::ceil(point.y)));
                 }
                 shape_angle->bbx = {min_x, min_y, max_x, max_y};
             }
@@ -1957,7 +2306,7 @@ T_T::Template::Ptr SearchTemplate::loadModelFileFromBinary(std::string path)
                 for (int j = 0; j < shape_size; j++) //轮廓点数量
                 {
                     //坐标x,y变化
-                    int rOrigX, rOrigY;
+                    double rOrigX, rOrigY;
                     float X, Y, T;
                     //通过坐标变化，将坐标原点0在左上角的图像坐标系转换为笛卡尔坐标系（原点在图像中心，x朝右，y朝上）
                     X = model_id_cp->templates[index]->shape_angle[0]->shape_point[j].x;
@@ -1966,8 +2315,8 @@ T_T::Template::Ptr SearchTemplate::loadModelFileFromBinary(std::string path)
                     X = X * std::cos(rad) - Y * std::sin(rad); // 逆时针旋转
                     Y = T * std::sin(rad) + Y * std::cos(rad); // 逆时针旋转
 
-                    rOrigX = (X + xOffSet > 0.0) ? (X + xOffSet + 0.5) : (X + xOffSet - 0.5); //四舍五入取整数
-                    rOrigY = (yOffSet - Y > 0.0) ? (yOffSet - Y + 0.5) : (yOffSet - Y - 0.5); //四舍五入取整数
+                    rOrigX = X + xOffSet;
+                    rOrigY = yOffSet - Y;
 
                     float DX, DY, DT;
                     // dx,dy变换
@@ -2142,6 +2491,23 @@ void SearchTemplate::drawMatchResults(cv::Mat& image, const std::vector<T_T::Mat
 
 namespace
 {
+void calculateDrawingGradients(const cv::Mat& image, cv::Mat& gradientX, cv::Mat& gradientY)
+{
+    cv::Mat gray;
+    if (image.channels() == 1) gray = image;
+    else cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
+
+    cv::Sobel(gray, gradientX, CV_32F, 1, 0, 1);
+    cv::Sobel(gray, gradientY, CV_32F, 0, 1, 1);
+    cv::Mat magnitude;
+    cv::magnitude(gradientX, gradientY, magnitude);
+    cv::Mat valid = magnitude > 1e-6f;
+    cv::divide(gradientX, magnitude, gradientX, 1.0, CV_32F);
+    cv::divide(gradientY, magnitude, gradientY, 1.0, CV_32F);
+    gradientX.setTo(0.0f, ~valid);
+    gradientY.setTo(0.0f, ~valid);
+}
+
 void drawEdgeLabel(cv::Mat& image, cv::Point2f a, cv::Point2f b,
                    const cv::Point2f& frameCenter, const std::string& text,
                    const cv::Scalar& color)
@@ -2202,6 +2568,16 @@ void SearchTemplate::drawMatchResults(cv::Mat& image,
                                       const std::vector<T_T::MatchResult>& results,
                                       const T_T::Template::Ptr& model)
 {
+    cv::Mat gradientX, gradientY;
+    calculateDrawingGradients(image, gradientX, gradientY);
+    _drawMatchResultsImpl(image, gradientX, gradientY, results, model);
+}
+
+void SearchTemplate::_drawMatchResultsImpl(cv::Mat& image, const cv::Mat& gradientX,
+                                           const cv::Mat& gradientY,
+                                           const std::vector<T_T::MatchResult>& results,
+                                           const T_T::Template::Ptr& model)
+{
     if (image.empty() || !model || model->templates.empty()) return;
     const auto& shapeInfo = model->templates[0];
     for (size_t index = 0; index < results.size(); ++index)
@@ -2231,7 +2607,24 @@ void SearchTemplate::drawMatchResults(cv::Mat& image,
                 const int x = cvRound(result.pose.x + point.x * result.scale);
                 const int y = cvRound(result.pose.y + point.y * result.scale);
                 if (x >= 0 && x < image.cols && y >= 0 && y < image.rows)
-                    cv::circle(image, cv::Point(x, y), 1, color, cv::FILLED, cv::LINE_AA);
+                {
+                    const float sx = gradientX.at<float>(y, x);
+                    const float sy = gradientY.at<float>(y, x);
+                    const float similarity = sx * point.edge_dx + sy * point.edge_dy;
+                    // Semantic contour colors are independent of the per-result box color:
+                    // green = strong, yellow = usable, red/larger = poor or missing edge.
+                    cv::Scalar pointColor;
+                    int radius = 1;
+                    if (similarity >= 0.8f) pointColor = cv::Scalar(0, 255, 0);
+                    else if (similarity >= 0.4f) pointColor = cv::Scalar(0, 255, 255);
+                    else
+                    {
+                        pointColor = cv::Scalar(0, 0, 255);
+                        radius = 2;
+                    }
+                    cv::circle(image, cv::Point(x, y), radius, pointColor,
+                               cv::FILLED, cv::LINE_AA);
+                }
             }
         }
 
@@ -2287,10 +2680,13 @@ void SearchTemplate::drawMatchResults(cv::Mat& image,
                                       const std::vector<T_T::MatchResult>& results,
                                       const std::vector<T_T::Template::Ptr>& models)
 {
+    if (image.empty()) return;
+    cv::Mat gradientX, gradientY;
+    calculateDrawingGradients(image, gradientX, gradientY);
     for (const auto& model : models)
     {
         if (!model) continue;
-        drawMatchResults(image, results, model);
+        _drawMatchResultsImpl(image, gradientX, gradientY, results, model);
     }
 }
 

@@ -296,7 +296,34 @@ void CreateTemplate::_extractShapeInfo(
                 if (fdx != 0 || fdy != 0)
                 {
                     float magnitude = (!(std::fabs(magnitude_origin) < 1e-6)) ? (1 / magnitude_origin) : 0;
-                    TF0degree.push_back({double(i), double(j), (float)fdx, (float)fdy, magnitude});
+                    // Localize the edge maximum along its gradient normal with a
+                    // three-sample quadratic fit. The bounded offset keeps noisy
+                    // or flat profiles from moving a feature into another pixel.
+                    const float nx = fdx * magnitude;
+                    const float ny = fdy * magnitude;
+                    const auto sampleMagnitude = [&](double x, double y) {
+                        const int x0 = std::max(0, std::min(width - 2,
+                            static_cast<int>(std::floor(x))));
+                        const int y0 = std::max(0, std::min(height - 2,
+                            static_cast<int>(std::floor(y))));
+                        const double ax = x - x0;
+                        const double ay = y - y0;
+                        const float v00 = pBufMag[y0 * width + x0];
+                        const float v10 = pBufMag[y0 * width + x0 + 1];
+                        const float v01 = pBufMag[(y0 + 1) * width + x0];
+                        const float v11 = pBufMag[(y0 + 1) * width + x0 + 1];
+                        return static_cast<float>((1.0 - ay) * ((1.0 - ax) * v00 + ax * v10) +
+                                                  ay * ((1.0 - ax) * v01 + ax * v11));
+                    };
+                    const float before = sampleMagnitude(i - nx, j - ny);
+                    const float after = sampleMagnitude(i + nx, j + ny);
+                    const float denominator = before - 2.0f * magnitude_origin + after;
+                    float offset = 0.0f;
+                    if (denominator < -1e-6f)
+                        offset = std::max(-0.5f, std::min(0.5f,
+                            0.5f * (before - after) / denominator));
+                    TF0degree.push_back({i + offset * nx, j + offset * ny,
+                                         (float)fdx, (float)fdy, magnitude});
                 }
             }
         }
@@ -454,7 +481,7 @@ bool CreateTemplate::_rotatedShapeInfo(T_T::ShapeInfo::Ptr shape_info_vec, int x
         for (int j = 0; j < shapeSize; j++) //轮廓点数量
         {
             //坐标x,y变化
-            int rOrigX, rOrigY;
+            double rOrigX, rOrigY;
             float X, Y, T;
             //通过坐标变化，将坐标原点0在左上角的图像坐标系转换为笛卡尔坐标系（原点在图像中心，x朝右，y朝上）
             X = shape_info_vec->shape_angle[0]->shape_point[j].x;
@@ -463,8 +490,8 @@ bool CreateTemplate::_rotatedShapeInfo(T_T::ShapeInfo::Ptr shape_info_vec, int x
             X = X * std::cos(rad) - Y * std::sin(rad); // 逆时针旋转
             Y = T * std::sin(rad) + Y * std::cos(rad); // 逆时针旋转
 
-            rOrigX = (X + xOffSet > 0.0) ? (X + xOffSet + 0.5) : (X + xOffSet - 0.5); //四舍五入取整数
-            rOrigY = (yOffSet - Y > 0.0) ? (yOffSet - Y + 0.5) : (yOffSet - Y - 0.5); //四舍五入取整数
+            rOrigX = X + xOffSet;
+            rOrigY = yOffSet - Y;
 
             // 更新旋转后的值x,y
             shape_info_vec->shape_angle[i]->shape_point[j].x = rOrigX - xOffSet;
@@ -509,16 +536,16 @@ bool CreateTemplate::_buildModelList(
             // 使用排序计算外接最大矩形框(左上,右下点)
             std::sort(item->shape_point.begin(), item->shape_point.end(),
                       [](const T_T::ShapePoint& pt1s, const T_T::ShapePoint& pt2s) { return pt1s.x < pt2s.x; });
-            bbx.lt_x = item->shape_point[0].x;
+            bbx.lt_x = static_cast<int>(std::floor(item->shape_point[0].x));
             std::sort(item->shape_point.begin(), item->shape_point.end(),
                       [](const T_T::ShapePoint& pt1s, const T_T::ShapePoint& pt2s) { return pt1s.y < pt2s.y; });
-            bbx.lt_y = item->shape_point[0].y;
+            bbx.lt_y = static_cast<int>(std::floor(item->shape_point[0].y));
             std::sort(item->shape_point.begin(), item->shape_point.end(),
                       [](const T_T::ShapePoint& pt1s, const T_T::ShapePoint& pt2s) { return pt1s.x > pt2s.x; });
-            bbx.rb_x = item->shape_point[0].x;
+            bbx.rb_x = static_cast<int>(std::ceil(item->shape_point[0].x));
             std::sort(item->shape_point.begin(), item->shape_point.end(),
                       [](const T_T::ShapePoint& pt1s, const T_T::ShapePoint& pt2s) { return pt1s.y > pt2s.y; });
-            bbx.rb_y = item->shape_point[0].y;
+            bbx.rb_y = static_cast<int>(std::ceil(item->shape_point[0].y));
             // 保存外接最大矩形框
             item->bbx = bbx;
         }
@@ -1297,4 +1324,76 @@ std::vector<cv::Point2d> CreateTemplate::getTemplatePointPyramid(T_T::Template::
     }
 
     return result_points;
+}
+
+bool CreateTemplate::drawPyramidFeatures(const cv::Mat& template_image,
+                                         const T_T::Template::Ptr& model_id,
+                                         cv::Mat& output) const
+{
+    output.release();
+    if (template_image.empty() || !model_id || !model_id->is_inited ||
+        model_id->template_cfg.num_levels < 0 || model_id->templates.empty()) return false;
+
+    cv::Mat gray;
+    if (template_image.channels() == 1) gray = template_image.clone();
+    else if (template_image.channels() == 3)
+        cv::cvtColor(template_image, gray, cv::COLOR_BGR2GRAY);
+    else if (template_image.channels() == 4)
+        cv::cvtColor(template_image, gray, cv::COLOR_BGRA2GRAY);
+    else return false;
+    if (gray.depth() != CV_8U) return false;
+
+    const int last_level = std::min(model_id->template_cfg.num_levels,
+                                    static_cast<int>(model_id->templates.size()) - 1);
+    std::vector<cv::Mat> pyramid(1, gray);
+    for (int level = 1; level <= last_level; ++level)
+    {
+        if (pyramid.back().cols < 2 || pyramid.back().rows < 2) return false;
+        cv::Mat next;
+        cv::pyrDown(pyramid.back(), next,
+                    cv::Size(pyramid.back().cols / 2, pyramid.back().rows / 2));
+        pyramid.push_back(next);
+    }
+
+    const int margin = 18;
+    const int gap = 24;
+    int canvas_width = margin * 2;
+    int canvas_height = margin * 2;
+    for (int level = last_level; level >= 0; --level)
+    {
+        canvas_width += pyramid[level].cols;
+        canvas_height += pyramid[level].rows;
+        if (level != 0) { canvas_width += gap; canvas_height += gap; }
+    }
+    output = cv::Mat(canvas_height, canvas_width, CV_8UC3, cv::Scalar(18, 18, 18));
+
+    int x = margin;
+    int y = margin;
+    for (int level = last_level; level >= 0; --level)
+    {
+        cv::Mat tile;
+        cv::cvtColor(pyramid[level], tile, cv::COLOR_GRAY2BGR);
+        const auto& shape_info = model_id->templates[level];
+        if (shape_info && !shape_info->shape_angle.empty() && shape_info->shape_angle[0])
+        {
+            for (const auto& feature : shape_info->shape_angle[0]->shape_point)
+            {
+                const cv::Point point(cvRound(tile.cols * 0.5 + feature.x),
+                                      cvRound(tile.rows * 0.5 + feature.y));
+                if (static_cast<unsigned>(point.x) < static_cast<unsigned>(tile.cols) &&
+                    static_cast<unsigned>(point.y) < static_cast<unsigned>(tile.rows))
+                    cv::circle(tile, point, level == 0 ? 1 : 0, cv::Scalar(0, 255, 255), -1, cv::LINE_AA);
+            }
+        }
+        cv::rectangle(output, cv::Rect(x - 1, y - 1, tile.cols + 2, tile.rows + 2),
+                      cv::Scalar(105, 105, 105), 1);
+        tile.copyTo(output(cv::Rect(x, y, tile.cols, tile.rows)));
+        cv::putText(output, "L" + std::to_string(level) + "  " +
+                    std::to_string(tile.cols) + "x" + std::to_string(tile.rows),
+                    cv::Point(x, std::max(13, y - 5)), cv::FONT_HERSHEY_SIMPLEX,
+                    0.38, cv::Scalar(230, 230, 230), 1, cv::LINE_AA);
+        x += tile.cols + gap;
+        y += tile.rows + gap;
+    }
+    return true;
 }

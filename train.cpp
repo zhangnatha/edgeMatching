@@ -25,7 +25,7 @@ bool parseInt(const std::string& text, int& value)
 void usage(const char* program)
 {
     std::cout << "Usage: " << program
-              << " [template_image] [--id N] [--output FILE]\n";
+              << " [template_image] [--id N] [--output FILE] [--pyramid-output FILE]\n";
 }
 }
 
@@ -37,6 +37,7 @@ int main(int argc, const char* argv[])
     cv::Mat model_image, model_mask;
     std::string imagePath = "../assert/m1.png";
     std::string modelPath = "./model.json";
+    std::string pyramidPath;
     int templateId = 1;
     bool imageSpecified = false;
     for (int i = 1; i < argc; ++i) {
@@ -55,6 +56,12 @@ int main(int argc, const char* argv[])
                 return 2;
             }
             modelPath = argv[++i];
+        } else if (arg == "--pyramid-output") {
+            if (i + 1 >= argc || argv[i + 1][0] == '\0' || argv[i + 1][0] == '-') {
+                usage(argv[0]);
+                return 2;
+            }
+            pyramidPath = argv[++i];
         } else if (!arg.empty() && arg[0] != '-') {
             if (imageSpecified) {
                 std::cerr << "Only one template image may be specified.\n";
@@ -106,6 +113,16 @@ int main(int argc, const char* argv[])
         return 1;
     }
     timer.record("保存模型");
+
+    if (!pyramidPath.empty()) {
+        cv::Mat visualization;
+        if (!trainer.drawPyramidFeatures(model_image, modelId, visualization) ||
+            !cv::imwrite(pyramidPath, visualization)) {
+            std::cerr << "Failed to save pyramid visualization: " << pyramidPath << '\n';
+            return 1;
+        }
+        timer.record("保存金字塔特征图");
+    }
 
     timer.report();
 

@@ -40,7 +40,13 @@
 # debug information files
 *.dwo
 
-build
+build/
+build-*/
 cmake-*
 .idea
 3rdparty
+
+# Local runtime and benchmark artifacts
+*.log
+model.json
+solution_guide_ii_b_matching.pdf

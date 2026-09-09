@@ -10,6 +10,11 @@
     typedef std::shared_ptr<TYPE> Ptr; \
     typedef std::weak_ptr<TYPE> WPtr;
 
+namespace I_I
+{
+    enum Metric { USE_POLARITY = 0, IGNORE_LOCAL_POLARITY = 1, IGNORE_GLOBAL_POLARITY = 2 };
+}
+
 namespace T_T
 {
     //模板制作输入参数
@@ -124,11 +129,17 @@ namespace T_T
         double scale_max;
         double scale_step;
         double min_visible_ratio;
+        bool subpixel_refine;
+        int min_contrast;
+        int metric;
 
         ScaleSearchCfg(double scale_min_ = 1.0, double scale_max_ = 1.0,
-                       double scale_step_ = 1.0, double min_visible_ratio_ = 1.0)
+                       double scale_step_ = 1.0, double min_visible_ratio_ = 1.0,
+                       bool subpixel_refine_ = false, int min_contrast_ = 0,
+                       int metric_ = I_I::USE_POLARITY)
             : scale_min(scale_min_), scale_max(scale_max_), scale_step(scale_step_),
-              min_visible_ratio(min_visible_ratio_)
+              min_visible_ratio(min_visible_ratio_), subpixel_refine(subpixel_refine_),
+              min_contrast(min_contrast_), metric(metric_)
         {
         }
     };
@@ -141,17 +152,20 @@ namespace T_T
         double scale;        // 目标相对于原始模板的尺度（1.0 为原尺寸）
         int template_id;     // 匹配到的模板 ID，-1 表示未指定
         double visible_ratio; // 落在待测图内的模板特征比例
+        double matched_ratio; // 可见点中达到搜索最小对比度的比例
 
         MatchResult()
-            : pose(0.0, 0.0, 0.0), score(0.0), scale(1.0), template_id(-1), visible_ratio(1.0)
+            : pose(0.0, 0.0, 0.0), score(0.0), scale(1.0), template_id(-1),
+              visible_ratio(1.0), matched_ratio(1.0)
         {
         }
 
         // 保留现有 `{Pose2d(...), score}` 构造用法的语义。
         MatchResult(const Pose2d& pose_, double score_, double scale_ = 1.0,
-                    int template_id_ = -1, double visible_ratio_ = 1.0)
+                    int template_id_ = -1, double visible_ratio_ = 1.0,
+                    double matched_ratio_ = 1.0)
             : pose(pose_), score(score_), scale(scale_), template_id(template_id_),
-              visible_ratio(visible_ratio_)
+              visible_ratio(visible_ratio_), matched_ratio(matched_ratio_)
         {
         }
     };
@@ -176,7 +190,6 @@ namespace I_I
     };
 
     // 枚举类型定义
-    enum Metric { USE_POLARITY, IGNORE_LOCAL_POLARITY, IGNORE_GLOBAL_POLARITY };
     enum Reduce { NONE = 0, LOW = 10, MEDIUM = 5, HIGH = 2, AUTO };
 
     // 匹配姿态结果

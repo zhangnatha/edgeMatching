@@ -11,6 +11,8 @@
 - **多尺度匹配**：无需重新训练模板即可搜索离散尺度范围，例如 `0.8` 至 `1.2`。
 - **多模板匹配**：一次调用可加载多个模型文件；结果包含 `template_id`、位置、角度、尺度、得分和可见比例。模型 ID 必须为唯一正数。
 - **清晰的结果可视化**：沿外包围矩形边缘平行绘制索引号、模板 ID、得分和尺度；轮廓、矩形和文字均安全裁剪。
+- **逐点匹配质量**：模板轮廓点按梯度方向余弦相似度着色，绿色为强匹配、黄色为中等匹配、红色大点为弱匹配或缺失边缘。
+- **模板金字塔展开图**：训练时可将真实灰度金字塔及每层 canonical 特征保存为一张从左上到右下展开的图像，画布随层数和图像尺寸自动扩展。
 
 ## 相似度原理
 
@@ -87,15 +89,37 @@ cmake --build build --parallel
 ./train
 ./train ../assert/m1.png
 ./train ../assert/m1.png --id 7 --output model_7.json
+./train ../assert/m1.png --id 7 --output model_7.json --pyramid-output pyramid_7.png
 ```
 
 完整命令行格式如下：
 
 ```bash
-./train [template_image] [--id N] [--output FILE]
+./train [template_image] [--id N] [--output FILE] [--pyramid-output FILE]
 ```
 
 不传参数时，默认读取 `../assert/m1.png`，生成 `./model.json`，模板 ID 为 `1`。
+`--pyramid-output` 为可选项；指定后会额外保存模板特征金字塔图。图中黄色点是各层实际参与匹配的 canonical 特征，最粗层位于左上角，原始分辨率层位于右下角。
+
+### 匹配过程可视化编译开关
+
+粗匹配和逐层精匹配的交互式窗口默认关闭，避免影响并行计算和无人值守运行。按需重新配置构建目录：
+
+```bash
+# 观察最高金字塔层的粗匹配搜索及候选结果
+cmake -S . -B build-debug -DSHAPE_MATCH_VISUALIZE_COARSE=ON
+
+# 观察每个候选从高层向低层细化的过程
+cmake -S . -B build-debug -DSHAPE_MATCH_VISUALIZE_FINE=ON
+
+# 两者同时开启
+cmake -S . -B build-debug \
+  -DSHAPE_MATCH_VISUALIZE_COARSE=ON \
+  -DSHAPE_MATCH_VISUALIZE_FINE=ON
+cmake --build build-debug --parallel
+```
+
+这些开关使用 `cv::imshow`/`cv::waitKey` 逐帧暂停，并为对应阶段关闭 OpenMP 并行；需要图形桌面环境，在服务器或 CI 中请保持 `OFF`。
 
 匹配程序示例：
 
@@ -109,8 +133,11 @@ cmake --build build --parallel
 ```bash
 ./inference [search_image] [model1.json model2.json ...] \
   [--min-score N] [--max-overlap N] \
+  [--angle-start DEG] [--angle-end DEG] \
   [--scale-min N] [--scale-max N] [--scale-step N] \
-  [--min-visible-ratio N] [--output FILE]
+  [--min-visible-ratio N] [--min-contrast N] \
+  [--metric use-polarity|ignore-global-polarity|ignore-local-polarity] \
+  [--subpixel] [--output FILE]
 ```
 
 以下命令加载两个模板，在 `0.8x` 至 `1.2x` 范围搜索，并允许至少一半特征可见：
@@ -157,8 +184,8 @@ build/train assert/m8.bmp --id 8 --output build/repro/model_8.json | tee build/r
 推理全部待测图：
 
 ```bash
-# m1、m2、m3 三模板联合匹配
-build/inference assert/src1_2_3.bmp build/repro/model_1.json build/repro/model_2.json build/repro/model_3.json --output build/repro/result_1_2_3.png | tee build/repro/infer_1_2_3.log
+# m1、m2、m3 三模板联合匹配，包含左右边界的半截目标
+build/inference assert/src1_2_3.bmp build/repro/model_1.json build/repro/model_2.json build/repro/model_3.json --angle-start -5 --angle-end 5 --min-visible-ratio 0.5 --output build/repro/result_1_2_3.png | tee build/repro/infer_1_2_3.log
 
 # m4、m5、m6 单模板匹配
 build/inference assert/src4.bmp build/repro/model_4.json --output build/repro/result_4.png | tee build/repro/infer_4.log
@@ -176,14 +203,20 @@ build/inference assert/src7_7.bmp build/repro/model_7.json --output build/repro/
 build/inference assert/src7_8.bmp build/repro/model_7.json --output build/repro/result_7_8.png | tee build/repro/infer_7_8.log
 
 # m8 共 7 个真实目标：单尺度搜索，保留边界部分可见目标
-build/inference assert/src8.bmp build/repro/model_8.json --min-score 0.9 --min-visible-ratio 0.5 --output build/repro/result_8.png | tee build/repro/infer_8.log
+build/inference assert/src8.bmp build/repro/model_8.json --min-score 0.95 --min-visible-ratio 0.5 --output build/repro/result_8.png | tee build/repro/infer_8.log
 ```
 
 `src8.bmp` 中的真实目标尺度均为 `1.0x`。对该图强制遍历 `0.8x`–`1.2x`
 不会增加有效召回，反而会近似按尺度数量成倍增加耗时，并且容易在条形模板的
-局部重复结构上产生低分候选。此处使用 `--min-score 0.9` 过滤分数约为
+局部重复结构上产生低分候选。此处使用 `--min-score 0.95` 过滤分数约为
 `0.70`–`0.86` 的局部匹配，保留 7 个分数为 `0.95`–`0.996` 的真实结果。只有
 待测数据确实存在尺寸变化时，才建议设置 `--scale-min`/`--scale-max`/`--scale-step`。
+
+`src1_2_3.bmp` 的预期结果为 33 个：27 个完整目标、左边界 3 个部分可见的
+`m3`，以及右边界 3 个中心位于图外的 `m1`。`--min-visible-ratio 0.5` 使部分目标
+按实际可见特征评分；目标中心无需位于图内。
+该样例的目标方向接近 `0°`，因此用 `--angle-start -5 --angle-end 5` 代替默认的
+`-180°`–`180°` 全角度搜索，避免对三个模板计算数百个不可能的方向。
 
 最后运行确定性合成回归测试：
 
@@ -197,6 +230,8 @@ ctest --test-dir build --output-on-failure
 
 模板图像和掩模必须为非空、尺寸相同的 8 位图像；彩色输入会先转换为灰度图。程序建立高斯金字塔，在掩模内提取边缘点和归一化梯度方向，将坐标转换为模板中心原点，并为每层保存一份 canonical `0°` 特征。
 
+边缘特征会沿归一化梯度法线对前、中、后三个幅值样本做二次曲线拟合，将峰值位置限制在原像素的 `±0.5 px` 内，从而得到亚像素模板坐标。旋转模板缓存保留浮点坐标，不再在每个角度上量化为整数。
+
 JSON 模型只保存 canonical 特征。加载 JSON 或二进制模型时，匹配器根据 `angle_start`、`angle_end` 和 `angle_step` 旋转点坐标与梯度向量，并生成所需角度缓存。这样模型存储和训练阶段内存复杂度由约 `O(levels * angles * features)` 降为 `O(levels * features)`。加载历史上已经包含多角度数据的二进制模型时，不会重复展开。
 
 ### 粗到精搜索
@@ -206,6 +241,19 @@ JSON 模型只保存 canonical 特征。加载 JSON 或二进制模型时，匹�
 对于部分可见目标，变换后位于图像外的点会被安全跳过，得分按可见点数归一化；`min_visible_ratio` 可拒绝可见特征过少的候选。绘制时同样裁剪轮廓和旋转矩形。
 
 多尺度匹配按 `scale_step` 遍历 `scale_min` 至 `scale_max`，并执行跨尺度重叠抑制。结果中的 `scale` 表示目标相对于训练模板的尺寸比例。多模板匹配逐个复用公开搜索接口，记录 `template_id`，合并候选后统一执行重叠抑制。
+
+`--min-contrast` 接受 `[0,361]` 的整数，按搜索图中央差分梯度幅值过滤弱边缘；默认 `0` 保持旧行为。`visible` 只统计坐标在图内且掩模为白色的几何可见点，`matched` 是这些可见点中达到最小对比度且梯度非零的比例。弱边缘仍计入得分分母，因此不会因只剩少量强边缘而产生虚高分。
+
+`--metric use-polarity` 使用有符号梯度方向；`ignore-global-polarity` 允许整个候选统一反色；`ignore-local-polarity` 则逐点忽略极性。后两者适合亮暗关系会变化的目标，但约束依次更宽松。
+
+使用 `--subpixel` 后，NMS 仅对最终候选执行亚像素 `x/y/angle/scale` 精修：先在相邻角度得分上做抛物线拟合，再在精修角度下优化位置并联合复评；多尺度搜索还会对相邻三个尺度的同一空间峰做二次插值。内部目标下降时回退离散姿态。对外 `score` 保留离散匹配得分，不与内部双线性目标混用。精修每次最多均匀采样 512 个模板特征，输出比例是该固定采样集上的估计值。默认关闭。
+
+例如，对 `src8.bmp` 输出亚像素位置：
+
+```bash
+build/inference assert/src8.bmp build/repro/model_8.json --min-score 0.95 \
+  --min-visible-ratio 0.5 --subpixel --output build/repro/result_8_subpixel.png
+```
 
 多模板接口要求模型指针非空，且每个模型的 `template_id` 为唯一正数；不满足时接口返回 `false`。
 
@@ -223,12 +271,15 @@ JSON 模型只保存 canonical 特征。加载 JSON 或二进制模型时，匹�
 | `scale_min`, `scale_max` | `0 < min <= max` | 定义目标尺度范围；传统单尺度行为使用 `1,1`。 |
 | `scale_step` | 有限正数，建议从 `0.05` 开始 | 越小尺度分辨率越高，耗时近似成比例增加。 |
 | `min_visible_ratio` | `(0, 1]` | 完整目标使用 `1.0`；边界截断目标可从 `0.5` 开始。 |
+| `min_contrast` | `[0, 361]`，默认 `0` | 屏蔽搜索图中的弱梯度；建议用代表性样本从 `10`逐步上调。 |
+| `metric` | `use/global/local polarity` | 亮暗关系稳定时用 `use`；整体或局部反色时分别用 `global`/`local`。 |
+| `subpixel` | 开/关，默认关 | 在 NMS 后联合精修 `x/y/angle/scale`，不让亚像素计算进入全图穷举。 |
 
 近似穷举复杂度为 `O(positions * angles * scales * features)`。应尽量收窄角度和尺度范围，并在正常样本及边界样本上联合调节 `min_score` 与 `min_visible_ratio`。
 
 ## 自动化测试
 
-CTest 中的确定性合成回归测试覆盖 `0.8x`、`1.0x`、`1.2x` 匹配、右边界部分可见目标、带 `template_id` 的双模板匹配、canonical-only 训练数据，以及不越界的结果绘制。
+CTest 中的确定性合成回归测试覆盖 `0.8x`、`1.0x`、`1.2x` 匹配、边界部分可见目标、多模板 ID、canonical-only 训练数据、全局/局部极性反转、搜索对比度、非整数角度精修，以及 CLI 非法参数拒绝。
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON

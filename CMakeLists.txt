@@ -3,6 +3,9 @@ project(shapeMatch)
 
 include(CTest)
 
+option(SHAPE_MATCH_VISUALIZE_COARSE "Show coarse matching candidates while inference runs" OFF)
+option(SHAPE_MATCH_VISUALIZE_FINE "Show each coarse-to-fine refinement step" OFF)
+
 # --- C++ 标准 ---
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -33,6 +36,10 @@ target_link_libraries(MakeTemplate ${OpenCV_LIBRARIES})
 add_library(FindTemplate SHARED
     src/FindTemplateV1.cpp
 )
+target_compile_definitions(FindTemplate PRIVATE
+    SHAPE_MATCH_VISUALIZE_COARSE=$<BOOL:${SHAPE_MATCH_VISUALIZE_COARSE}>
+    SHAPE_MATCH_VISUALIZE_FINE=$<BOOL:${SHAPE_MATCH_VISUALIZE_FINE}>
+)
 target_link_libraries(FindTemplate ${OpenCV_LIBRARIES})
 
 # --- 构建可执行文件 ---
@@ -45,7 +52,17 @@ target_link_libraries(inference FindTemplate ${OpenCV_LIBRARIES})
 if(BUILD_TESTING)
     add_executable(test_matching tests/test_matching.cpp)
     target_link_libraries(test_matching MakeTemplate FindTemplate ${OpenCV_LIBRARIES})
+    add_executable(benchmark_matching tests/benchmark_matching.cpp)
+    target_link_libraries(benchmark_matching FindTemplate ${OpenCV_LIBRARIES})
     add_test(NAME matching_regression COMMAND test_matching)
+    add_test(NAME cli_reject_negative_contrast COMMAND inference --min-contrast -1)
+    add_test(NAME cli_reject_large_contrast COMMAND inference --min-contrast 362)
+    add_test(NAME cli_reject_fractional_contrast COMMAND inference --min-contrast 1.5)
+    add_test(NAME cli_reject_missing_contrast COMMAND inference --min-contrast)
+    add_test(NAME cli_reject_bad_metric COMMAND inference --metric bad)
+    set_tests_properties(cli_reject_negative_contrast cli_reject_large_contrast
+                         cli_reject_fractional_contrast cli_reject_missing_contrast
+                         cli_reject_bad_metric PROPERTIES WILL_FAIL TRUE)
 endif()
 
 # --- 安装库 ---

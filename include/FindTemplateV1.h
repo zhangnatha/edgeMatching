@@ -150,6 +150,8 @@ namespace SM_V1
          * @brief 使用显式模板绘制带尺度、索引及得分的匹配结果。
          *
          * 该接口不依赖 SearchTemplate 最后一次加载的模板尺寸。
+         * 轮廓点按局部梯度余弦相似度着色：绿色为强匹配，
+         * 黄色为中等匹配，红色大点为弱匹配或缺失边缘。
          */
         void drawMatchResults(cv::Mat& image, const std::vector<T_T::MatchResult>& results,
                               const T_T::Template::Ptr& model);
@@ -163,6 +165,11 @@ namespace SM_V1
                               const std::vector<T_T::Template::Ptr>& models);
 
     private:
+        void _drawMatchResultsImpl(cv::Mat& image, const cv::Mat& gradient_x,
+                                   const cv::Mat& gradient_y,
+                                   const std::vector<T_T::MatchResult>& results,
+                                   const T_T::Template::Ptr& model);
+
         bool _searchTemplateSingleScale(cv::Mat image, cv::Mat s_mask_image, ROI roi,
                                         T_T::Template::Ptr model_id, int angle_start,
                                         int angle_extent, float min_score, int num_matches,
@@ -182,7 +189,8 @@ namespace SM_V1
          * @brief 提取特征（梯度信息）
          */
         void _getFeature(cv::Mat search_image, cv::Mat mask_image, int width, int height,
-        std::vector<float>& p_buf_gradX, std::vector<float>& p_buf_gradY, bool useSIMD);
+        std::vector<float>& p_buf_gradX, std::vector<float>& p_buf_gradY,
+        std::vector<float>& p_buf_magnitude, bool useSIMD);
 
         /**
          * @brief 粗匹配到精匹配的转换
@@ -239,6 +247,10 @@ namespace SM_V1
         int image_width_ = 0;  /**< 输入图像宽度 */
         int image_height_ = 0; /**< 输入图像高度 */
         double min_visible_ratio_ = 1.0; /**< 当前搜索要求的最小可见特征比例 */
+        bool subpixel_refine_ = false; /**< 是否对 NMS 后候选执行亚像素位置精修 */
+        int search_min_contrast_ = 0; /**< 搜索图中央差分梯度幅值阈值 */
+        I_I::Metric metric_ = I_I::USE_POLARITY; /**< 梯度极性度量 */
+        bool variable_visibility_ = false; /**< 用户掩模或部分可见搜索 */
         std::mutex search_mutex_; /**< 保护单实例的搜索期间配置 */
     };
 } // namespace SM_V1
