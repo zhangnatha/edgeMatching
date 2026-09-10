@@ -132,6 +132,20 @@ int main() {
                            (visualizationChannels[2] > 240) &
                            (visualizationChannels[0] < 40);
     if (cv::countNonZero(yellowPixels) == 0) return 19;
+    std::vector<cv::Size> pyramidSizes(1, patternA.size());
+    for (int level = 1; level <= pyramidModel->template_cfg.num_levels; ++level)
+        pyramidSizes.push_back(cv::Size(pyramidSizes.back().width / 2,
+                                        pyramidSizes.back().height / 2));
+    int tileX = 18, tileY = 18;
+    for (int level = pyramidModel->template_cfg.num_levels; level >= 0; --level)
+    {
+        const cv::Rect tile(tileX, tileY, pyramidSizes[level].width,
+                            pyramidSizes[level].height);
+        if ((tile & cv::Rect(0, 0, yellowPixels.cols, yellowPixels.rows)) != tile ||
+            cv::countNonZero(yellowPixels(tile)) == 0) return 31;
+        tileX += pyramidSizes[level].width + 24;
+        tileY += pyramidSizes[level].height + 24;
+    }
 
     SM_V1::SearchTemplate matcher;
     // The original five-argument constructor remains source-compatible.
@@ -342,6 +356,11 @@ int main() {
         sequentialResults.insert(sequentialResults.end(), current.begin(), current.end());
     }
     if (!sameResults(batchResults, sequentialResults)) return 26;
+    for (const auto& result : batchResults) {
+        if (!std::isfinite(result.pose.x) || !std::isfinite(result.pose.y) ||
+            result.pose.x < 0.0 || result.pose.x >= multiScene.cols ||
+            result.pose.y < 0.0 || result.pose.y >= multiScene.rows) return 32;
+    }
 
     const size_t resultCountBeforeInvalidCall = multiResults.size();
     if (matcher.searchTemplate(multiScene, cv::Mat(),

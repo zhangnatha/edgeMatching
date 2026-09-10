@@ -17,6 +17,40 @@ using namespace SM_V1;
 #endif
 #define COSTTIME_SHOW 1 // 耗时统计，用于算法优化观测
 
+namespace
+{
+void setPixelIfInside(cv::Mat& image, double x, double y, const cv::Vec3b& color)
+{
+    if (image.empty() || image.type() != CV_8UC3) return;
+    const int px = cvRound(x);
+    const int py = cvRound(y);
+    if (static_cast<unsigned>(px) >= static_cast<unsigned>(image.cols) ||
+        static_cast<unsigned>(py) >= static_cast<unsigned>(image.rows)) return;
+    image.at<cv::Vec3b>(py, px) = color;
+}
+
+void showVisualization(const std::string& name, const cv::Mat& image, int waitMilliseconds)
+{
+    static bool displayEnabled = true;
+    static bool warningPrinted = false;
+    if (!displayEnabled || image.empty()) return;
+    try
+    {
+        cv::imshow(name, image);
+        cv::waitKey(waitMilliseconds);
+    }
+    catch (const cv::Exception& error)
+    {
+        displayEnabled = false;
+        if (!warningPrinted)
+        {
+            std::cerr << "Visualization disabled: " << error.what() << std::endl;
+            warningPrinted = true;
+        }
+    }
+}
+}
+
 SearchTemplate::SearchTemplate()
     : thread_num_(std::max(1u, std::thread::hardware_concurrency()))
 {
@@ -343,7 +377,7 @@ static inline float hsum_ps_avx(__m256 v) {
 }
 
 // 待测图像精匹配
-void SearchTemplate::_fineMatching(
+bool SearchTemplate::_fineMatching(
     cv::Mat search_image,
     cv::Mat mask_image,
     T_T::ShapeInfo::Ptr shape_info_vec,
@@ -645,6 +679,7 @@ void SearchTemplate::_fineMatching(
             result_list->matched_ratio = best_matched[k];
         }
     }
+    return best_score > 0.0f;
 }
 
 // 待测图像粗匹配：特征提取和相似性度量
@@ -838,11 +873,11 @@ void SearchTemplate::_coarseMatching(
                 cv::drawMarker(search_image_back,cv::Point2f(i,j),cv::Scalar(0, 0, 255));
                 cv::rectangle(search_image_back,cv::Point2f(search_region.start_X,search_region.start_Y),cv::Point2f(search_region.end_X,search_region.end_Y),cv::Scalar(255, 0, 0));
                 for (const auto it:shape_angle->shape_point) {
-                    search_image_back.at<cv::Vec3b>(it.y+j,it.x+i) = cv::Vec3b(0,255,0);;
+                    setPixelIfInside(search_image_back, it.x + i, it.y + j,
+                                     cv::Vec3b(0, 255, 0));
                 }
                 cv::putText(search_image_back,std::to_string(PartialScore),cv::Point2f(i,j),cv::FONT_HERSHEY_DUPLEX,0.5,cv::Scalar(0, 0, 255));
-                cv::imshow("COARSE",search_image_back);
-                cv::waitKey(5);
+                showVisualization("COARSE", search_image_back, 5);
                 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #endif
             } // 搜索区域j的for
@@ -988,10 +1023,15 @@ bool SearchTemplate::_coarse2FineMatching(
 
     // 对非金字塔高层的待测图像进行局部裁切
     // 裁切的目的：减少全图匹配的长耗时
-    if ((Row1 >= p_image_py.cols) || (Col1 >= p_image_py.rows))
+    if (Row1 >= p_image_py.cols || Col1 >= p_image_py.rows ||
+        cropImgW <= 0 || cropImgH <= 0)
     {
         cropImage = p_image_py.clone();
         cropMask = mask_image.clone();
+        Row1 = 0;
+        Col1 = 0;
+        cropImgW = cropImage.cols;
+        cropImgH = cropImage.rows;
     }
     else
     {
@@ -1018,8 +1058,11 @@ bool SearchTemplate::_coarse2FineMatching(
     if (pInfoPy == nullptr) return false;
 
     // 待测图像精匹配
-    _fineMatching(cropImage, cropMask, pInfoPy, py_levels, cropImgW, cropImgH, min_score, greediness, SearchRegion,
-                  result_list_low,false);
+    T_T::MatchResult currentLevelResult;
+    if (!_fineMatching(cropImage, cropMask, pInfoPy, py_levels, cropImgW, cropImgH,
+                       min_score, greediness, SearchRegion, &currentLevelResult, false))
+        return false;
+    *result_list_low = currentLevelResult;
 #if SHAPE_MATCH_VISUALIZE_FINE
     cv::Mat cropImageBGR;
     cv::cvtColor(cropImage, cropImageBGR, cv::COLOR_GRAY2BGR);
@@ -1036,7 +1079,8 @@ bool SearchTemplate::_coarse2FineMatching(
     }
     for (const auto& it2 : contours)
     {
-        cropImageBGR.at<cv::Vec3b>(it2.y + result_list_low->pose.y, it2.x + result_list_low->pose.x) = contours_color;
+        setPixelIfInside(cropImageBGR, it2.x + result_list_low->pose.x,
+                         it2.y + result_list_low->pose.y, contours_color);
     }
 
     cv::drawMarker(cropImageBGR, cv::Point2f(result_list_low->pose.x, result_list_low->pose.y), cv::Scalar(0, 0, 255),
@@ -1055,14 +1099,13 @@ bool SearchTemplate::_coarse2FineMatching(
         1,
         1,
         cv::Scalar(0, 0, 255));
-    cv::imshow("精匹配", cropImageBGR);
-    cv::waitKey(0);
+    showVisualization("精匹配", cropImageBGR, 0);
 #endif
     // 坐标变换：
     // 精匹配得到结果转换至原图上
     // [裁切图] --->  [原图]
-    result_list_low->pose.x = result_list_low->pose.x + Row1;
-    result_list_low->pose.y = result_list_low->pose.y + Col1;
+    result_list_low->pose.x += Row1;
+    result_list_low->pose.y += Col1;
     return true;
 }
 
@@ -1302,7 +1345,8 @@ bool SearchTemplate::_searchTemplateSingleScale(
             }
             for (const auto& it2 : contours)
             {
-                pImageBGR.at<cv::Vec3b>(it2.y + it.pose.y, it2.x + it.pose.x) = contours_color;
+                setPixelIfInside(pImageBGR, it2.x + it.pose.x,
+                                 it2.y + it.pose.y, contours_color);
             }
         }
         cv::putText(
@@ -1315,8 +1359,7 @@ bool SearchTemplate::_searchTemplateSingleScale(
             cv::FONT_HERSHEY_DUPLEX,
             0.5,
             cv::Scalar(0, 0, 255));
-        cv::imshow("粗匹配结果", pImageBGR);
-        cv::waitKey(0);
+        showVisualization("粗匹配结果", pImageBGR, 0);
 #endif
         //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
         //+++++++++++++++++++++++++待测图像非金字塔最高层精匹配作用域+++++++++++++++++++++++++++++
@@ -1340,7 +1383,7 @@ bool SearchTemplate::_searchTemplateSingleScale(
                 cv::Mat pMask  = maskPyr[N];
 
                 // 待测图像粗匹配到精匹配策略（每次传入ResultListHigh，并获取ResultListLow结果）
-                _coarse2FineMatching(
+                const bool refined = _coarse2FineMatching(
                     pImage,
                     pMask,
                     model_id,
@@ -1352,6 +1395,12 @@ bool SearchTemplate::_searchTemplateSingleScale(
                     &ResultListHigh,
                     &ResultListLow,
                     N);
+
+                if (!refined)
+                {
+                    ResultListLow = T_T::MatchResult();
+                    break;
+                }
 
                 ResultListHigh = ResultListLow;
 

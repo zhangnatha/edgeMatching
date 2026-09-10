@@ -1382,7 +1382,12 @@ bool CreateTemplate::drawPyramidFeatures(const cv::Mat& template_image,
                                       cvRound(tile.rows * 0.5 + feature.y));
                 if (static_cast<unsigned>(point.x) < static_cast<unsigned>(tile.cols) &&
                     static_cast<unsigned>(point.y) < static_cast<unsigned>(tile.rows))
-                    cv::circle(tile, point, level == 0 ? 1 : 0, cv::Scalar(0, 255, 255), -1, cv::LINE_AA);
+                {
+                    if (level == 0)
+                        cv::circle(tile, point, 1, cv::Scalar(0, 255, 255), -1, cv::LINE_AA);
+                    else
+                        tile.at<cv::Vec3b>(point) = cv::Vec3b(0, 255, 255);
+                }
             }
         }
         cv::rectangle(output, cv::Rect(x - 1, y - 1, tile.cols + 2, tile.rows + 2),

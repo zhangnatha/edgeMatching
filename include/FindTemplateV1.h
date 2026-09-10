@@ -222,7 +222,7 @@ namespace SM_V1
         /**
          * @brief 精匹配
          */
-        void _fineMatching(cv::Mat search_image, cv::Mat mask_image, T_T::ShapeInfo::Ptr shape_info_vec, int py_levels,
+        bool _fineMatching(cv::Mat search_image, cv::Mat mask_image, T_T::ShapeInfo::Ptr shape_info_vec, int py_levels,
                            int width, int height, float min_score,
                            float greediness, T_T::SearchCfg search_region, T_T::MatchResult* result_list, bool useSIMD);
 

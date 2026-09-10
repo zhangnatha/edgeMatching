@@ -119,7 +119,7 @@ cmake -S . -B build-debug \
 cmake --build build-debug --parallel
 ```
 
-这些开关使用 `cv::imshow`/`cv::waitKey` 逐帧暂停，并为对应阶段关闭 OpenMP 并行；需要图形桌面环境，在服务器或 CI 中请保持 `OFF`。
+这些开关使用 `cv::imshow`/`cv::waitKey` 逐帧暂停，并为对应阶段关闭 OpenMP 并行。轮廓绘制会跳过裁剪图之外的点，不影响部分可见目标的评分；如果当前 OpenCV 后端没有可用图形桌面，程序会输出一次提示、关闭后续窗口并继续完成推理。在服务器或 CI 中仍建议保持 `OFF`。
 
 匹配程序示例：
 
@@ -217,6 +217,21 @@ build/inference assert/src8.bmp build/repro/model_8.json --min-score 0.95 --min-
 按实际可见特征评分；目标中心无需位于图内。
 该样例的目标方向接近 `0°`，因此用 `--angle-start -5 --angle-end 5` 代替默认的
 `-180°`–`180°` 全角度搜索，避免对三个模板计算数百个不可能的方向。
+
+`src9_7.png` 中两个工件被其他金属工件大面积遮挡。`--min-visible-ratio`
+只描述图像边界和用户掩模产生的几何可见率，不能识别场景内遮挡；默认
+`use-polarity` 的有符号梯度会被遮挡物的反向边缘拉低。该场景应使用局部极性
+鲁棒度量，并以较高阈值抑制杂乱背景候选：
+
+```bash
+build/inference assert/src9_7.png build/model_9.json build/model_10.json \
+  build/model_11.json --min-visible-ratio 0.5 \
+  --metric ignore-local-polarity --min-score 0.9 --output build/result.png
+```
+
+该配置返回 5 个目标；参考中心坐标约为 `(233,123)`、`(368,178)`、
+`(204,240)`、`(323,327)` 和 `(201,334)`。局部极性模式约束更宽，不能简单
+沿用默认低阈值，否则会增加假阳性。
 
 最后运行确定性合成回归测试：
 
