@@ -165,6 +165,25 @@ namespace SM_V1
                               const std::vector<T_T::Template::Ptr>& models);
 
     private:
+        struct PreparedScaleInput
+        {
+            double scale = 1.0;
+            cv::Mat image;
+            cv::Mat mask;
+        };
+
+        bool _prepareSearchBatch(cv::Mat image, cv::Mat mask, const ROI& roi,
+                                 const T_T::ScaleSearchCfg& scale_cfg,
+                                 std::vector<PreparedScaleInput>& prepared) const;
+
+        bool _searchTemplatePrepared(const std::vector<PreparedScaleInput>& prepared,
+                                     const ROI& roi, T_T::Template::Ptr model_id,
+                                     int angle_start, int angle_extent, float min_score,
+                                     int num_matches, float max_overlap, int num_levels,
+                                     float greediness, bool sort_by_y,
+                                     const T_T::ScaleSearchCfg& scale_cfg,
+                                     std::vector<T_T::MatchResult>& result_list);
+
         void _drawMatchResultsImpl(cv::Mat& image, const cv::Mat& gradient_x,
                                    const cv::Mat& gradient_y,
                                    const std::vector<T_T::MatchResult>& results,

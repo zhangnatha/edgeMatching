@@ -1492,6 +1492,28 @@ bool SearchTemplate::_searchTemplateSingleScale(
 
 namespace
 {
+template <typename F>
+class ScopeExit
+{
+public:
+    explicit ScopeExit(F action) : action_(std::move(action)) {}
+    ScopeExit(ScopeExit&& other) : action_(std::move(other.action_)), active_(other.active_)
+    { other.active_ = false; }
+    ~ScopeExit() { if (active_) action_(); }
+    ScopeExit(const ScopeExit&) = delete;
+    ScopeExit& operator=(const ScopeExit&) = delete;
+
+private:
+    F action_;
+    bool active_ = true;
+};
+
+template <typename F>
+ScopeExit<F> makeScopeExit(F action)
+{
+    return ScopeExit<F>(std::move(action));
+}
+
 bool validScaleCfg(const T_T::ScaleSearchCfg& cfg)
 {
     return std::isfinite(cfg.scale_min) && std::isfinite(cfg.scale_max) &&
@@ -1679,6 +1701,36 @@ bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image,
                           sort_by_y, scale_cfg, result_list);
 }
 
+bool SearchTemplate::_prepareSearchBatch(
+    cv::Mat image, cv::Mat mask, const ROI& roi,
+    const T_T::ScaleSearchCfg& scale_cfg,
+    std::vector<PreparedScaleInput>& prepared) const
+{
+    cv::Mat workImage = image;
+    cv::Mat workMask = mask;
+    if (!roi.empty())
+    {
+        if (!roi.crop(image, workImage)) return false;
+        if (!mask.empty() && !roi.crop(mask, workMask)) return false;
+    }
+
+    prepared.clear();
+    const double epsilon = scale_cfg.scale_step * 1e-6;
+    for (double scale = scale_cfg.scale_min; scale <= scale_cfg.scale_max + epsilon;
+         scale += scale_cfg.scale_step)
+    {
+        PreparedScaleInput input;
+        input.scale = scale;
+        const double inverseScale = 1.0 / scale;
+        cv::resize(workImage, input.image, cv::Size(), inverseScale, inverseScale,
+                   inverseScale < 1.0 ? cv::INTER_AREA : cv::INTER_LINEAR);
+        if (!workMask.empty())
+            cv::resize(workMask, input.mask, input.image.size(), 0.0, 0.0, cv::INTER_NEAREST);
+        prepared.push_back(std::move(input));
+    }
+    return true;
+}
+
 bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi,
                                     T_T::Template::Ptr model_id,
                                     int angle_start, int angle_extent,
@@ -1690,16 +1742,9 @@ bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi
 {
     if (image.empty() || !model_id || !validScaleCfg(scale_cfg)) return false;
     std::lock_guard<std::mutex> searchGuard(search_mutex_);
+    std::vector<PreparedScaleInput> prepared;
+    if (!_prepareSearchBatch(image, s_mask_image, roi, scale_cfg, prepared)) return false;
 
-    cv::Mat workImage = image;
-    cv::Mat workMask = s_mask_image;
-    if (!roi.empty())
-    {
-        if (!roi.crop(image, workImage)) return false;
-        if (!s_mask_image.empty() && !roi.crop(s_mask_image, workMask)) return false;
-    }
-
-    std::vector<T_T::MatchResult> all;
     const double oldVisibleRatio = min_visible_ratio_;
     const bool oldSubpixelRefine = subpixel_refine_;
     const int oldSearchMinContrast = search_min_contrast_;
@@ -1709,20 +1754,35 @@ bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi
     subpixel_refine_ = scale_cfg.subpixel_refine;
     search_min_contrast_ = scale_cfg.min_contrast;
     metric_ = static_cast<I_I::Metric>(scale_cfg.metric);
-    variable_visibility_ = scale_cfg.min_visible_ratio < 1.0 || !workMask.empty();
+    variable_visibility_ = scale_cfg.min_visible_ratio < 1.0 || !s_mask_image.empty();
+    const auto restore = [&]() {
+        min_visible_ratio_ = oldVisibleRatio;
+        subpixel_refine_ = oldSubpixelRefine;
+        search_min_contrast_ = oldSearchMinContrast;
+        metric_ = oldMetric;
+        variable_visibility_ = oldVariableVisibility;
+    };
+    auto stateGuard = makeScopeExit(restore);
+    return _searchTemplatePrepared(prepared, roi, model_id, angle_start,
+        angle_extent, min_score, num_matches, max_overlap, num_levels, greediness,
+        sort_by_y, scale_cfg, result_list);
+}
+
+bool SearchTemplate::_searchTemplatePrepared(
+    const std::vector<PreparedScaleInput>& prepared, const ROI& roi,
+    T_T::Template::Ptr model_id, int angle_start, int angle_extent,
+    float min_score, int num_matches, float max_overlap, int num_levels,
+    float greediness, bool sort_by_y, const T_T::ScaleSearchCfg& scale_cfg,
+    std::vector<T_T::MatchResult>& result_list)
+{
+    std::vector<T_T::MatchResult> all;
     const double epsilon = scale_cfg.scale_step * 1e-6;
-    for (double scale = scale_cfg.scale_min; scale <= scale_cfg.scale_max + epsilon;
-         scale += scale_cfg.scale_step)
+    for (const auto& input : prepared)
     {
-        cv::Mat scaledImage, scaledMask;
-        const double inverseScale = 1.0 / scale;
-        cv::resize(workImage, scaledImage, cv::Size(), inverseScale, inverseScale,
-                   inverseScale < 1.0 ? cv::INTER_AREA : cv::INTER_LINEAR);
-        if (!workMask.empty())
-            cv::resize(workMask, scaledMask, scaledImage.size(), 0.0, 0.0, cv::INTER_NEAREST);
+        const double scale = input.scale;
 
         std::vector<T_T::MatchResult> perScale;
-        if (!_searchTemplateSingleScale(scaledImage, scaledMask, ROI(), model_id,
+        if (!_searchTemplateSingleScale(input.image, input.mask, ROI(), model_id,
                                         angle_start, angle_extent, min_score, -1,
                                         max_overlap, num_levels, greediness,
                                         sort_by_y, perScale)) continue;
@@ -1746,11 +1806,6 @@ bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi
             all.push_back(result);
         }
     }
-    min_visible_ratio_ = oldVisibleRatio;
-    subpixel_refine_ = oldSubpixelRefine;
-    search_min_contrast_ = oldSearchMinContrast;
-    metric_ = oldMetric;
-    variable_visibility_ = oldVariableVisibility;
 
     std::sort(all.begin(), all.end(), [](const T_T::MatchResult& a, const T_T::MatchResult& b)
     {
@@ -1869,14 +1924,37 @@ bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi
             !templateIds.insert(model->template_cfg.id).second)
             return false;
     }
+
+    std::lock_guard<std::mutex> searchGuard(search_mutex_);
+    std::vector<PreparedScaleInput> prepared;
+    if (!_prepareSearchBatch(image, s_mask_image, roi, scale_cfg, prepared)) return false;
+
+    const double oldVisibleRatio = min_visible_ratio_;
+    const bool oldSubpixelRefine = subpixel_refine_;
+    const int oldSearchMinContrast = search_min_contrast_;
+    const I_I::Metric oldMetric = metric_;
+    const bool oldVariableVisibility = variable_visibility_;
+    min_visible_ratio_ = scale_cfg.min_visible_ratio;
+    subpixel_refine_ = scale_cfg.subpixel_refine;
+    search_min_contrast_ = scale_cfg.min_contrast;
+    metric_ = static_cast<I_I::Metric>(scale_cfg.metric);
+    variable_visibility_ = scale_cfg.min_visible_ratio < 1.0 || !s_mask_image.empty();
+    const auto restore = [&]() {
+        min_visible_ratio_ = oldVisibleRatio;
+        subpixel_refine_ = oldSubpixelRefine;
+        search_min_contrast_ = oldSearchMinContrast;
+        metric_ = oldMetric;
+        variable_visibility_ = oldVariableVisibility;
+    };
+    auto stateGuard = makeScopeExit(restore);
+
     std::vector<T_T::MatchResult> merged;
     for (const auto& model : models)
     {
         std::vector<T_T::MatchResult> current;
-        if (!searchTemplate(image, s_mask_image, roi, model, angle_start, angle_extent,
-                            min_score, -1, max_overlap, num_levels, greediness,
-                            sort_by_y, scale_cfg, current))
-            return false;
+        if (!_searchTemplatePrepared(prepared, roi, model, angle_start, angle_extent,
+                                     min_score, -1, max_overlap, num_levels, greediness,
+                                     sort_by_y, scale_cfg, current)) return false;
         merged.insert(merged.end(), current.begin(), current.end());
     }
     std::sort(merged.begin(), merged.end(), [](const T_T::MatchResult& a,

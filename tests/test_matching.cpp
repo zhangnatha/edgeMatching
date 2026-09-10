@@ -71,6 +71,29 @@ double rotationError(double measured, double expectedMagnitude) {
 bool gradientValid(float magnitude, int minContrast) {
     return magnitude > 1e-6f && magnitude >= static_cast<float>(minContrast);
 }
+
+bool sameResults(std::vector<T_T::MatchResult> a, std::vector<T_T::MatchResult> b) {
+    const auto order = [](const T_T::MatchResult& lhs, const T_T::MatchResult& rhs) {
+        if (lhs.template_id != rhs.template_id) return lhs.template_id < rhs.template_id;
+        if (lhs.pose.y != rhs.pose.y) return lhs.pose.y < rhs.pose.y;
+        if (lhs.pose.x != rhs.pose.x) return lhs.pose.x < rhs.pose.x;
+        return lhs.score > rhs.score;
+    };
+    std::sort(a.begin(), a.end(), order);
+    std::sort(b.begin(), b.end(), order);
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (a[i].template_id != b[i].template_id ||
+            std::abs(a[i].pose.x - b[i].pose.x) > 1e-6 ||
+            std::abs(a[i].pose.y - b[i].pose.y) > 1e-6 ||
+            std::abs(a[i].pose.angle - b[i].pose.angle) > 1e-6 ||
+            std::abs(a[i].scale - b[i].scale) > 1e-9 ||
+            std::abs(a[i].score - b[i].score) > 1e-5 ||
+            std::abs(a[i].visible_ratio - b[i].visible_ratio) > 1e-6 ||
+            std::abs(a[i].matched_ratio - b[i].matched_ratio) > 1e-6) return false;
+    }
+    return true;
+}
 }
 
 int main() {
@@ -306,6 +329,21 @@ int main() {
     if (!nearResult(multiResults, 101, 1.0, 75, 90, 8.0) ||
         !nearResult(multiResults, 202, 1.0, 220, 90, 8.0)) return 8;
 
+    // The batch path shares ROI/scale preparation but must remain equivalent to
+    // independent per-model searches, including multi-scale result metadata.
+    const T_T::ScaleSearchCfg batchCfg(0.9, 1.1, 0.1, 1.0);
+    std::vector<T_T::MatchResult> batchResults, sequentialResults;
+    if (!matcher.searchTemplate(multiScene, cv::Mat(), models, 0, 0, 0.55f, -1,
+                                0.4f, 0, 0.8f, true, batchCfg, batchResults)) return 24;
+    for (const auto& model : models) {
+        std::vector<T_T::MatchResult> current;
+        if (!matcher.searchTemplate(multiScene, cv::Mat(), model, 0, 0, 0.55f, -1,
+                                    0.4f, 0, 0.8f, true, batchCfg, current)) return 25;
+        sequentialResults.insert(sequentialResults.end(), current.begin(), current.end());
+    }
+    if (!sameResults(batchResults, sequentialResults)) return 26;
+
+    const size_t resultCountBeforeInvalidCall = multiResults.size();
     if (matcher.searchTemplate(multiScene, cv::Mat(),
                                std::vector<T_T::Template::Ptr>{modelA, nullptr},
                                0, 0, 0.55f, 10, 0.4f, 0, 0.8f, true,
@@ -314,6 +352,7 @@ int main() {
                                std::vector<T_T::Template::Ptr>{modelA, modelA},
                                0, 0, 0.55f, 10, 0.4f, 0, 0.8f, true,
                                T_T::ScaleSearchCfg(), multiResults)) return 11;
+    if (multiResults.size() != resultCountBeforeInvalidCall) return 27;
 
     cv::Mat color;
     cv::cvtColor(partial, color, cv::COLOR_GRAY2BGR);
