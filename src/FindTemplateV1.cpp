@@ -49,6 +49,106 @@ void showVisualization(const std::string& name, const cv::Mat& image, int waitMi
         }
     }
 }
+
+using SupportPixels = std::vector<int64_t>;
+
+int64_t supportKey(int x, int y)
+{
+    const uint64_t ux = static_cast<uint32_t>(x);
+    const uint64_t uy = static_cast<uint32_t>(y);
+    return static_cast<int64_t>((ux << 32) | uy);
+}
+
+double angleDistance(double lhs, double rhs)
+{
+    double distance = std::fmod(std::abs(lhs - rhs), 360.0);
+    if (distance > 180.0) distance = 360.0 - distance;
+    return distance;
+}
+
+SupportPixels buildSupportPixels(const T_T::MatchResult& result,
+                                 const T_T::Template::Ptr& model,
+                                 bool poseAngleIsOutput)
+{
+    SupportPixels support;
+    if (!model || model->templates.empty() || !model->templates[0] ||
+        model->templates[0]->shape_angle.empty()) return support;
+
+    // Internal shape angles have the opposite sign of the public result angle
+    // after _searchTemplateSingleScale performs its final angle conversion.
+    const double shapeAngle = poseAngleIsOutput ? -result.pose.angle : result.pose.angle;
+    const T_T::ShapeAngle::Ptr* selected = nullptr;
+    double bestDistance = std::numeric_limits<double>::infinity();
+    for (const auto& candidate : model->templates[0]->shape_angle)
+    {
+        if (!candidate) continue;
+        const double distance = angleDistance(candidate->angle, shapeAngle);
+        if (distance < bestDistance)
+        {
+            bestDistance = distance;
+            selected = &candidate;
+        }
+    }
+    if (!selected || !*selected) return support;
+
+    static const int offsets[][2] = {
+        {-2, 0}, {-1, -1}, {-1, 0}, {-1, 1}, {0, -2}, {0, -1},
+        {0, 0}, {0, 1}, {0, 2}, {1, -1}, {1, 0}, {1, 1}, {2, 0}};
+    support.reserve((*selected)->shape_point.size() * 13);
+    for (const auto& point : (*selected)->shape_point)
+    {
+        const int x = cvRound(result.pose.x + result.scale * point.x);
+        const int y = cvRound(result.pose.y + result.scale * point.y);
+        for (const auto& offset : offsets)
+            support.push_back(supportKey(x + offset[0], y + offset[1]));
+    }
+    std::sort(support.begin(), support.end());
+    support.erase(std::unique(support.begin(), support.end()), support.end());
+    return support;
+}
+
+double supportIoU(const SupportPixels& lhs, const SupportPixels& rhs)
+{
+    if (lhs.empty() || rhs.empty()) return 0.0;
+    size_t i = 0, j = 0, intersection = 0;
+    while (i < lhs.size() && j < rhs.size())
+    {
+        if (lhs[i] < rhs[j]) ++i;
+        else if (rhs[j] < lhs[i]) ++j;
+        else { ++intersection; ++i; ++j; }
+    }
+    const size_t unionSize = lhs.size() + rhs.size() - intersection;
+    return unionSize == 0 ? 0.0 : static_cast<double>(intersection) / unionSize;
+}
+
+cv::RotatedRect legacyBoxForResult(const T_T::MatchResult& result,
+                                   const T_T::Template::Ptr& model,
+                                   bool poseAngleIsOutput)
+{
+    if (!model) return cv::RotatedRect();
+    const float width = static_cast<float>(model->template_cfg.image_width * result.scale);
+    const float height = static_cast<float>(model->template_cfg.image_height * result.scale);
+    const float angle = static_cast<float>(poseAngleIsOutput ? -result.pose.angle : result.pose.angle);
+    return cv::RotatedRect(cv::Point2f(static_cast<float>(result.pose.x),
+                                       static_cast<float>(result.pose.y)),
+                           cv::Size2f(width, height), angle);
+}
+
+bool crossTemplateNearCenter(const T_T::MatchResult& lhs,
+                             const T_T::Template::Ptr& lhsModel,
+                             const T_T::MatchResult& rhs,
+                             const T_T::Template::Ptr& rhsModel)
+{
+    if (!lhsModel || !rhsModel) return false;
+    const double lhsMinDimension = std::min(lhsModel->template_cfg.image_width,
+                                            lhsModel->template_cfg.image_height) * lhs.scale;
+    const double rhsMinDimension = std::min(rhsModel->template_cfg.image_width,
+                                            rhsModel->template_cfg.image_height) * rhs.scale;
+    const double threshold = 0.20 * std::min(lhsMinDimension, rhsMinDimension);
+    return threshold > 0.0 &&
+           std::hypot(lhs.pose.x - rhs.pose.x, lhs.pose.y - rhs.pose.y) <= threshold;
+}
+
 }
 
 SearchTemplate::SearchTemplate()
@@ -117,11 +217,12 @@ bool SearchTemplate::_maxOverlap(const cv::RotatedRect rect1, const cv::RotatedR
     }
     else if (ret == 1) //有
     {
-        float inter_area = 0;
-        // 计算相交的多边形面积
-        inter_area = cv::contourArea(inter_section);
-        float lap = inter_area / (rect1.size.width * rect1.size.height);
-        rb = lap > overlap;
+        // 计算相交的多边形面积，并按较小框归一化，保持 legacy NMS
+        // 的包含关系（小框完全落在大框内时重叠率为 1）。
+        const double inter_area = std::abs(cv::contourArea(inter_section));
+        const double min_area = std::min(static_cast<double>(rect1.size.area()),
+                                         static_cast<double>(rect2.size.area()));
+        rb = min_area > 0.0 && inter_area / min_area > overlap;
     }
     return rb;
 }
@@ -162,42 +263,48 @@ std::vector<T_T::MatchResult> SearchTemplate::_filterNearCandidates(const std::v
 std::vector<T_T::MatchResult> SearchTemplate::_filterMaxOverLapCandidates(
     const std::vector<T_T::MatchResult>& input,
     float max_ovelap,
-    int model_height,
-    int model_width)
+    const T_T::Template::Ptr& model,
+    bool pose_angle_is_output)
 {
     std::vector<T_T::MatchResult> candidates = input;
     std::sort(candidates.begin(), candidates.end(), [](const T_T::MatchResult& lhs, const T_T::MatchResult& rhs)
     {
         return lhs.score > rhs.score;
     });
-    std::vector<T_T::MatchResult> result;
+    struct CandidateSupport { T_T::MatchResult result; SupportPixels support; };
+    std::vector<CandidateSupport> result;
     bool overlapFlag = false;
     for (const auto& c : candidates)
     {
         //遍历所有已记录的结果
         overlapFlag = false;
+        CandidateSupport current{c, buildSupportPixels(c, model, pose_angle_is_output)};
         for (auto& r : result)
         {
-            //遍历所有已选择的结果
-            cv::RotatedRect rect1(cv::Point2f(r.pose.x, r.pose.y), cv::Size2f(model_width, model_height),
-                                  r.pose.angle + 180);
-            cv::RotatedRect rect2(cv::Point2f(c.pose.x, c.pose.y), cv::Size2f(model_width, model_height),
-                                  c.pose.angle + 180);
-            if (_maxOverlap(rect1, rect2, max_ovelap))
+            const bool supportOverlap = !current.support.empty() && !r.support.empty() &&
+                supportIoU(current.support, r.support) > max_ovelap;
+            const bool highConfidence = std::min(current.result.score, r.result.score) >= 0.90;
+            const bool boxOverlap = !highConfidence &&
+                _maxOverlap(legacyBoxForResult(current.result, model, pose_angle_is_output),
+                            legacyBoxForResult(r.result, model, pose_angle_is_output), max_ovelap);
+            if (supportOverlap || boxOverlap)
             {
                 //当结果位置相近时，竞选出一个结果保存
                 overlapFlag = true;
                 break;
             }
         }
-        if (!overlapFlag) { result.push_back(c); }
+        if (!overlapFlag) { result.push_back(std::move(current)); }
     }
     //按照得分从高到低进行排序
-    std::sort(result.begin(), result.end(), [](const T_T::MatchResult& c1, const T_T::MatchResult& c2)
+    std::vector<T_T::MatchResult> output;
+    output.reserve(result.size());
+    for (const auto& candidate : result) output.push_back(candidate.result);
+    std::sort(output.begin(), output.end(), [](const T_T::MatchResult& c1, const T_T::MatchResult& c2)
     {
         return c1.score > c2.score;
     });
-    return result;
+    return output;
 }
 
 // 获取特征信息
@@ -1382,6 +1489,16 @@ bool SearchTemplate::_searchTemplateSingleScale(
                 cv::Mat pImage = imagePyr[N];
                 cv::Mat pMask  = maskPyr[N];
 
+                // The user threshold is the final L0 acceptance criterion.  A
+                // downsampled proposal can score lower at an intermediate
+                // pyramid level solely because of quantisation/blur, even
+                // though its L0 score is good enough.  Keep intermediate
+                // refinement permissive so that such a proposal can reach L0;
+                // only L0 uses the requested threshold for acceptance.
+                const float level_min_score = N == 0
+                    ? min_score
+                    : std::max(0.4f, min_score - 0.20f);
+
                 // 待测图像粗匹配到精匹配策略（每次传入ResultListHigh，并获取ResultListLow结果）
                 const bool refined = _coarse2FineMatching(
                     pImage,
@@ -1390,7 +1507,7 @@ bool SearchTemplate::_searchTemplateSingleScale(
                     N,
                     ImgBordered.cols,
                     ImgBordered.rows,
-                    min_score,
+                    level_min_score,
                     greediness,
                     &ResultListHigh,
                     &ResultListLow,
@@ -1404,9 +1521,9 @@ bool SearchTemplate::_searchTemplateSingleScale(
 
                 ResultListHigh = ResultListLow;
 
-                if (ResultListLow.score < static_cast<double>(min_score))
+                if (ResultListLow.score < static_cast<double>(level_min_score))
                 {
-                    break; //高层至底层匹配的过程中，分数低于设定值则停止对这个粗匹配的向下寻找真理（直到第0层）
+                    break; //当前层未达到传播门限，不能继续传播无效候选
                 }
             } // 结束：非金字塔最高层的逐层精匹配
 
@@ -1438,8 +1555,7 @@ bool SearchTemplate::_searchTemplateSingleScale(
         //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
         //+++++++++++++++++++++所有精匹配结果，按照重叠率筛选[重则选分数较大者]++++++++++++++++++++
         //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-        findResult = _filterMaxOverLapCandidates(TempResult, max_overlap, model_id->template_cfg.image_height,
-                                                 model_id->template_cfg.image_width);
+        findResult = _filterMaxOverLapCandidates(TempResult, max_overlap, model_id, false);
 
         // Refine only candidates that survived NMS. Performing six bilinear score
         // evaluations for every coarse candidate would erase the benefit of the
@@ -1860,30 +1976,25 @@ bool SearchTemplate::_searchTemplatePrepared(
     {
         return a.score > b.score;
     });
-    std::vector<T_T::MatchResult> kept;
+    struct CandidateSupport { T_T::MatchResult result; SupportPixels support; };
+    std::vector<CandidateSupport> kept;
     for (const auto& candidate : all)
     {
         bool suppressed = false;
+        const T_T::Template::Ptr candidateModel = model_id;
+        const SupportPixels candidateSupport = buildSupportPixels(candidate, candidateModel, true);
         for (const auto& accepted : kept)
         {
-            // 同一模板不同尺度的重复候选按较小框归一化，避免小尺度重复漏抑制。
-            const cv::RotatedRect ra(cv::Point2f(candidate.pose.x, candidate.pose.y),
-                                     cv::Size2f(model_id->template_cfg.image_width * candidate.scale,
-                                                model_id->template_cfg.image_height * candidate.scale),
-                                     -candidate.pose.angle);
-            const cv::RotatedRect rb(cv::Point2f(accepted.pose.x, accepted.pose.y),
-                                     cv::Size2f(model_id->template_cfg.image_width * accepted.scale,
-                                                model_id->template_cfg.image_height * accepted.scale),
-                                     -accepted.pose.angle);
-            std::vector<cv::Point2f> overlap;
-            if (cv::rotatedRectangleIntersection(ra, rb, overlap) != cv::INTERSECT_NONE && !overlap.empty()) {
-                const double inter = std::abs(cv::contourArea(overlap));
-                const double denom = std::min(ra.size.area(), rb.size.area());
-                if (denom > 0.0 && inter / denom > max_overlap) suppressed = true;
-            }
-            if (suppressed) break;
+            const bool supportOverlap = !candidateSupport.empty() && !accepted.support.empty() &&
+                supportIoU(candidateSupport, accepted.support) > max_overlap;
+            const bool highConfidence = std::min(candidate.score, accepted.result.score) >= 0.90;
+            const bool boxOverlap = !highConfidence &&
+                _maxOverlap(legacyBoxForResult(candidate, candidateModel, true),
+                            legacyBoxForResult(accepted.result, candidateModel, true), max_overlap);
+            if (supportOverlap || boxOverlap)
+            { suppressed = true; break; }
         }
-        if (!suppressed) kept.push_back(candidate);
+        if (!suppressed) kept.push_back(CandidateSupport{candidate, candidateSupport});
     }
 
     // HALCON-style interpolation in the scale dimension. The expensive image
@@ -1897,8 +2008,9 @@ bool SearchTemplate::_searchTemplatePrepared(
                             static_cast<double>(model_id->template_cfg.image_height)) *
                      scale_cfg.scale_step * 1.5);
         const double angleTolerance = std::max(5.0, model_id->template_cfg.angle_step * 3.0);
-        for (auto& candidate : kept)
+        for (auto& candidateWithSupport : kept)
         {
+            auto& candidate = candidateWithSupport.result;
             const auto adjacent = [&](double wantedScale) -> const T_T::MatchResult* {
                 const T_T::MatchResult* best = nullptr;
                 double bestDistance = std::numeric_limits<double>::infinity();
@@ -1932,13 +2044,16 @@ bool SearchTemplate::_searchTemplatePrepared(
     }
     if (num_matches >= 0 && kept.size() > static_cast<size_t>(num_matches))
         kept.resize(num_matches);
+    std::vector<T_T::MatchResult> keptResults;
+    keptResults.reserve(kept.size());
+    for (const auto& candidate : kept) keptResults.push_back(candidate.result);
     if (sort_by_y)
-        std::sort(kept.begin(), kept.end(), [](const T_T::MatchResult& a, const T_T::MatchResult& b)
+        std::sort(keptResults.begin(), keptResults.end(), [](const T_T::MatchResult& a, const T_T::MatchResult& b)
         { return a.pose.y < b.pose.y; });
     else
-        std::sort(kept.begin(), kept.end(), [](const T_T::MatchResult& a, const T_T::MatchResult& b)
+        std::sort(keptResults.begin(), keptResults.end(), [](const T_T::MatchResult& a, const T_T::MatchResult& b)
         { return a.pose.x < b.pose.x; });
-    result_list.insert(result_list.end(), kept.begin(), kept.end());
+    result_list.insert(result_list.end(), keptResults.begin(), keptResults.end());
     return true;
 }
 
@@ -2009,43 +2124,55 @@ bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi
     std::sort(merged.begin(), merged.end(), [](const T_T::MatchResult& a,
                                                const T_T::MatchResult& b)
     { return a.score > b.score; });
-    // 不同模板允许重叠；仅在各模板内部抑制重复候选。
-    std::vector<T_T::MatchResult> kept;
+    // Use feature support for final NMS.  Different template IDs participate
+    // through support only; legacy boxes remain a low-confidence fallback
+    // within one template, where they remove weak duplicate peaks.
+    struct CandidateSupport { T_T::MatchResult result; SupportPixels support; };
+    std::vector<CandidateSupport> kept;
     for (const auto& candidate : merged)
     {
         bool suppressed = false;
+        const T_T::Template::Ptr* candidateModel = nullptr;
+        for (const auto& model : models)
+            if (model && model->template_cfg.id == candidate.template_id)
+            { candidateModel = &model; break; }
+        const SupportPixels candidateSupport = candidateModel
+            ? buildSupportPixels(candidate, *candidateModel, true) : SupportPixels();
         for (const auto& accepted : kept)
         {
-            if (candidate.template_id != accepted.template_id) continue;
-            const T_T::Template::Ptr* candidateModel = nullptr;
-            for (const auto& model : models)
-                if (model && model->template_cfg.id == candidate.template_id) { candidateModel = &model; break; }
-            if (!candidateModel) continue;
-            cv::RotatedRect candidateRect(cv::Point2f(candidate.pose.x, candidate.pose.y),
-                cv::Size2f((*candidateModel)->template_cfg.image_width * candidate.scale,
-                           (*candidateModel)->template_cfg.image_height * candidate.scale), -candidate.pose.angle);
-            cv::RotatedRect acceptedRect(cv::Point2f(accepted.pose.x, accepted.pose.y),
-                cv::Size2f((*candidateModel)->template_cfg.image_width * accepted.scale,
-                           (*candidateModel)->template_cfg.image_height * accepted.scale), -accepted.pose.angle);
-            std::vector<cv::Point2f> intersection;
-            if (cv::rotatedRectangleIntersection(candidateRect, acceptedRect, intersection) ==
-                    cv::INTERSECT_NONE || intersection.empty()) continue;
-            const double inter = std::abs(cv::contourArea(intersection));
-            const double denom = std::min(candidateRect.size.area(), acceptedRect.size.area());
-            if (denom > 0.0 && inter / denom > max_overlap)
+            const bool supportOverlap = !candidateSupport.empty() && !accepted.support.empty() &&
+                supportIoU(candidateSupport, accepted.support) > max_overlap;
+            const bool sameTemplate = candidate.template_id == accepted.result.template_id;
+            const bool highConfidence = std::min(candidate.score, accepted.result.score) >= 0.90;
+            const bool boxOverlap = sameTemplate && !highConfidence && candidateModel &&
+                _maxOverlap(legacyBoxForResult(candidate, *candidateModel, true),
+                            legacyBoxForResult(accepted.result, *candidateModel, true), max_overlap);
+            const T_T::Template::Ptr* acceptedModel = nullptr;
+            if (!sameTemplate)
+                for (const auto& model : models)
+                    if (model && model->template_cfg.id == accepted.result.template_id)
+                    { acceptedModel = &model; break; }
+            const bool nearCenterDuplicate = !sameTemplate && candidateModel && acceptedModel &&
+                candidate.score <= accepted.result.score &&
+                crossTemplateNearCenter(candidate, *candidateModel,
+                                        accepted.result, *acceptedModel);
+            if (supportOverlap || boxOverlap || nearCenterDuplicate)
             { suppressed = true; break; }
         }
-        if (!suppressed) kept.push_back(candidate);
+        if (!suppressed) kept.push_back(CandidateSupport{candidate, candidateSupport});
     }
     if (num_matches >= 0 && kept.size() > static_cast<size_t>(num_matches))
         kept.resize(num_matches);
+    std::vector<T_T::MatchResult> keptResults;
+    keptResults.reserve(kept.size());
+    for (const auto& candidate : kept) keptResults.push_back(candidate.result);
     if (sort_by_y)
-        std::sort(kept.begin(), kept.end(), [](const T_T::MatchResult& a, const T_T::MatchResult& b)
+        std::sort(keptResults.begin(), keptResults.end(), [](const T_T::MatchResult& a, const T_T::MatchResult& b)
         { return a.pose.y < b.pose.y; });
     else
-        std::sort(kept.begin(), kept.end(), [](const T_T::MatchResult& a, const T_T::MatchResult& b)
+        std::sort(keptResults.begin(), keptResults.end(), [](const T_T::MatchResult& a, const T_T::MatchResult& b)
         { return a.pose.x < b.pose.x; });
-    result_list.insert(result_list.end(), kept.begin(), kept.end());
+    result_list.insert(result_list.end(), keptResults.begin(), keptResults.end());
     return true;
 }
 

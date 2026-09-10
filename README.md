@@ -158,7 +158,7 @@ cmake --build build-debug --parallel
 
 ## `assert` 样例快速复现
 
-以下命令覆盖 `assert/` 目录中的全部 8 张模板图和 13 张待测图。请在仓库根目录执行；模型、结果图和日志都会写入 `build/repro/`，不会覆盖 `assert/` 内的原图。
+以下命令覆盖基础样例中的 8 张模板图和 13 张待测图。请在仓库根目录执行；模型、结果图和日志都会写入 `build/repro/`，不会覆盖 `assert/` 内的原图。包含 `m9` 系列的完整 11 模板、26 搜索图复现命令见后文“assert 全量回归矩阵”。
 
 先构建程序并创建输出目录：
 
@@ -239,6 +239,107 @@ build/inference assert/src9_7.png build/model_9.json build/model_10.json \
 ctest --test-dir build --output-on-failure
 ```
 
+## assert 全量回归矩阵
+
+以下结果于 2026-09-11 在 Intel Core i7-10700（16 个逻辑线程）、Release
+构建上取得。输出、模型及日志统一保存在 `build/assert_matrix/`。所有模板使用
+唯一 ID；所有输出姿态、分数及比例均检查为有限数。
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+mkdir -p build/assert_matrix
+
+for spec in "1 m1.png" "2 m2.png" "3 m3.png" "4 m4.bmp" "5 m5.jpg" \
+            "6 m6.bmp" "7 m7.bmp" "8 m8.bmp" "9 m9.bmp" \
+            "10 m9_1.bmp" "11 m9_2.bmp"; do
+  set -- $spec
+  build/train "assert/$2" --id "$1" \
+    --output "build/assert_matrix/model_$1.json" \
+    --pyramid-output "build/assert_matrix/pyramid_$1.png" \
+    > "build/assert_matrix/train_$1.log" 2>&1
+done
+
+build/inference assert/src1_2_3.bmp build/assert_matrix/model_{1,2,3}.json \
+  --angle-start -5 --angle-end 5 --min-visible-ratio 0.5 \
+  --output build/assert_matrix/result_src1_2_3.png \
+  > build/assert_matrix/infer_src1_2_3.log 2>&1
+
+build/inference assert/src4.bmp build/assert_matrix/model_4.json \
+  --output build/assert_matrix/result_src4.png > build/assert_matrix/infer_src4.log 2>&1
+build/inference assert/src5.bmp build/assert_matrix/model_5.json \
+  --min-score 0.65 --output build/assert_matrix/result_src5.png \
+  > build/assert_matrix/infer_src5.log 2>&1
+build/inference assert/src6.jpg build/assert_matrix/model_6.json \
+  --output build/assert_matrix/result_src6.png > build/assert_matrix/infer_src6.log 2>&1
+
+for n in 1 2 3 4 5 6 7 8; do
+  build/inference "assert/src7_$n.bmp" build/assert_matrix/model_7.json \
+    --output "build/assert_matrix/result_src7_$n.png" \
+    > "build/assert_matrix/infer_src7_$n.log" 2>&1
+done
+
+build/inference assert/src8.bmp build/assert_matrix/model_8.json \
+  --min-score 0.95 --min-visible-ratio 0.5 \
+  --output build/assert_matrix/result_src8.png > build/assert_matrix/infer_src8.log 2>&1
+
+for n in $(seq 1 13); do
+  score=0.9
+  case "$n" in
+    2) score=0.785 ;;
+    4) score=0.790 ;;
+    5|6) score=0.800 ;;
+  esac
+  build/inference "assert/src9_$n.png" build/assert_matrix/model_{9,10,11}.json \
+    --metric ignore-local-polarity --min-score "$score" \
+    --output "build/assert_matrix/result_src9_$n.png" \
+    > "build/assert_matrix/infer_src9_$n.log" 2>&1
+done
+ctest --test-dir build --output-on-failure
+```
+
+`src1_2_3` 只含接近零度的目标，因此收窄到 `[-5°,5°]`，并用 0.5
+可见率保留边缘半截目标。`src8` 已知为单尺度且真实目标分数高，使用 0.95
+抑制条纹局部重复。`src9` 的亮暗极性会局部变化且存在遮挡，使用 local polarity；
+大多数图用 0.9，遮挡较重的 `src9_2`、`src9_4`、`src9_5`、`src9_6`
+采用逐图验证过的较低阈值。`src5` 使用 0.65，以恢复密集阵列中一个略低分目标；
+其余图使用默认参数，作为默认行为回归。
+
+| 图像 | 结果数 | template_id 分布 | 总耗时 (ms) |
+|---|---:|---|---:|
+| src1_2_3 | 33 | 1:12, 2:9, 3:12 | 1008.425 |
+| src4 | 3 | 4:3 | 140.467 |
+| src5 | 161 | 5:161 | 1246.769 |
+| src6 | 15 | 6:15 | 320.076 |
+| src7_1 | 1 | 7:1 | 96.958 |
+| src7_2 | 1 | 7:1 | 94.686 |
+| src7_3 | 1 | 7:1 | 92.844 |
+| src7_4 | 1 | 7:1 | 101.311 |
+| src7_5 | 1 | 7:1 | 92.874 |
+| src7_6 | 1 | 7:1 | 92.816 |
+| src7_7 | 1 | 7:1 | 92.904 |
+| src7_8 | 1 | 7:1 | 95.537 |
+| src8 | 7 | 8:7 | 153.032 |
+| src9_1 | 4 | 9:2, 10:2 | 217.703 |
+| src9_2 | 8 | 9:3, 10:3, 11:2 | 427.526 |
+| src9_3 | 6 | 10:5, 11:1 | 254.625 |
+| src9_4 | 4 | 9:1, 10:1, 11:2 | 399.578 |
+| src9_5 | 3 | 9:3 | 308.151 |
+| src9_6 | 4 | 9:3, 11:1 | 437.671 |
+| src9_7 | 5 | 9:2, 10:2, 11:1 | 236.557 |
+| src9_8 | 5 | 10:4, 11:1 | 243.338 |
+| src9_9 | 4 | 9:2, 10:2 | 272.582 |
+| src9_10 | 4 | 9:2, 10:1, 11:1 | 270.344 |
+| src9_11 | 3 | 9:1, 10:1, 11:1 | 211.993 |
+| src9_12 | 3 | 10:3 | 204.997 |
+| src9_13 | 2 | 9:2 | 138.699 |
+
+所有 26 张搜索图的进程退出码均为 0。表中 `src9` 结果图均经人工目视复核；
+降低阈值的四张图没有用重复框凑数。`src5` 的 161 个结果明显多于其他单模板
+样例；该图本身包含密集重复结构，在没有独立人工标注计数前，本矩阵只将其记录为
+回归基线，不将这 161 项直接宣称为全部真阳性。若业务期望数量更少，应先建立标注
+并分析得分/空间分布，再决定提高阈值或增加结构约束。
+
 ## 算法说明
 
 ### 模板制作
@@ -251,7 +352,9 @@ JSON 模型只保存 canonical 特征。加载 JSON 或二进制模型时，匹�
 
 ### 粗到精搜索
 
-待测图像建立梯度金字塔，在可用的最高层进行位置和角度粗搜索，再逐层向原图精化。得分是模板梯度方向与图像梯度方向的余弦相似度。返回结果前会合并邻近候选并抑制重叠候选。
+待测图像建立梯度金字塔，在可用的最高层进行位置和角度粗搜索，再逐层向原图精化。得分是模板梯度方向与图像梯度方向的余弦相似度。中间层使用 `max(0.4, min_score-0.2)` 作为传播门限，避免降采样量化或模糊过早丢弃在 L0 能达到用户阈值的目标；只有 L0 使用用户给定的最终阈值。
+
+重叠抑制采用轮廓特征支撑带 IoU，而不是只看模板外接框：将最接近候选角度的 L0 特征变换到结果位姿，在每个特征周围扩张 2 像素菱形支撑带，再计算像素集合 IoU。高置信同模板目标即使外接框重叠，只要支撑带不同也会保留；低置信同模板候选仍用旧外接框规则兜底去重。不同模板主要按支撑带判断，仅当中心距离不超过两模板较小边的 20% 时抑制低分近中心重复，避免同一工件被两个模板重复报告。
 
 对于部分可见目标，变换后位于图像外的点会被安全跳过，得分按可见点数归一化；`min_visible_ratio` 可拒绝可见特征过少的候选。绘制时同样裁剪轮廓和旋转矩形。
 
@@ -294,7 +397,7 @@ build/inference assert/src8.bmp build/repro/model_8.json --min-score 0.95 \
 
 ## 自动化测试
 
-CTest 中的确定性合成回归测试覆盖 `0.8x`、`1.0x`、`1.2x` 匹配、边界部分可见目标、多模板 ID、canonical-only 训练数据、全局/局部极性反转、搜索对比度、非整数角度精修，以及 CLI 非法参数拒绝。
+CTest 中的回归测试覆盖 `0.8x`、`1.0x`、`1.2x` 匹配、边界部分可见目标、多模板 ID、canonical-only 训练数据、全局/局部极性反转、搜索对比度、非整数角度精修、轮廓支撑带 NMS、跨模板近中心去重、中间金字塔传播门限，以及 CLI 非法参数拒绝。
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON

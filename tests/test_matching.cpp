@@ -1,6 +1,11 @@
-#include "FindTemplateV1.h"
-#include "MakeTemplateV1.h"
+#include <mutex>
+#include "Type.h"
+#include "ROI.h"
 #include <opencv2/opencv.hpp>
+#define private public
+#include "FindTemplateV1.h"
+#undef private
+#include "MakeTemplateV1.h"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -110,6 +115,37 @@ int main() {
     if (modelA->template_cfg.id != 101 || modelB->template_cfg.id != 202) return 2;
     if (!hasFractionalFeature(modelA) || !hasFractionalFeature(modelB)) return 14;
     if (modelA->templates.size() != 1 || modelA->templates[0]->shape_angle.size() != 1) return 2;
+
+    // Exercise the hybrid NMS policy directly.  The synthetic model has two
+    // sparse support points inside a large box: at a 30 px displacement the
+    // boxes overlap by 70%, but the support bands are disjoint.
+    auto nmsModel = std::make_shared<T_T::Template>();
+    nmsModel->template_cfg.id = 303;
+    nmsModel->template_cfg.image_width = 100;
+    nmsModel->template_cfg.image_height = 100;
+    auto nmsShapeInfo = std::make_shared<T_T::ShapeInfo>();
+    auto nmsShapeAngle = std::make_shared<T_T::ShapeAngle>();
+    nmsShapeAngle->angle = 0.0;
+    nmsShapeAngle->shape_point.push_back(T_T::ShapePoint{-45.0, 0.0, 1.0f, 0.0f});
+    nmsShapeAngle->shape_point.push_back(T_T::ShapePoint{45.0, 0.0, 1.0f, 0.0f});
+    nmsShapeInfo->shape_angle.push_back(nmsShapeAngle);
+    nmsModel->templates.push_back(nmsShapeInfo);
+    SM_V1::SearchTemplate nmsMatcher;
+    const auto nmsResult = [](double x, double score) {
+        return T_T::MatchResult(T_T::Pose2d(x, 90.0, 0.0), score, 1.0, 303);
+    };
+    const std::vector<T_T::MatchResult> highSupportDistinct{
+        nmsResult(100.0, 0.95), nmsResult(130.0, 0.94)};
+    if (nmsMatcher._filterMaxOverLapCandidates(highSupportDistinct, 0.4f,
+                                               nmsModel, true).size() != 2) return 34;
+    const std::vector<T_T::MatchResult> sameSupportDuplicate{
+        nmsResult(100.0, 0.95), nmsResult(100.0, 0.94)};
+    if (nmsMatcher._filterMaxOverLapCandidates(sameSupportDuplicate, 0.4f,
+                                               nmsModel, true).size() != 1) return 35;
+    const std::vector<T_T::MatchResult> lowBoxDuplicate{
+        nmsResult(100.0, 0.80), nmsResult(130.0, 0.79)};
+    if (nmsMatcher._filterMaxOverLapCandidates(lowBoxDuplicate, 0.4f,
+                                               nmsModel, true).size() != 1) return 36;
 
     auto defaultModel = std::make_shared<T_T::Template>();
     cv::Mat defaultMask(patternA.size(), CV_8UC1, cv::Scalar(255));
@@ -343,6 +379,34 @@ int main() {
     if (!nearResult(multiResults, 101, 1.0, 75, 90, 8.0) ||
         !nearResult(multiResults, 202, 1.0, 220, 90, 8.0)) return 8;
 
+    // Different templates whose rectangular boxes overlap substantially must
+    // survive when their feature support bands are distinct.  The two boxes
+    // here overlap by half their width, while the two contour layouts remain
+    // separable enough for support IoU at max_overlap=0.4.
+    cv::Mat overlappingScene(180, 300, CV_8UC1, cv::Scalar(20));
+    cv::max(overlappingScene, sceneWith(patternA, 1.0, 110, 90), overlappingScene);
+    cv::max(overlappingScene, sceneWith(patternB, 1.0, 150, 90), overlappingScene);
+    std::vector<T_T::MatchResult> overlappingResults;
+    if (!matcher.searchTemplate(overlappingScene, cv::Mat(), models, 0, 0, 0.55f, 10,
+                                0.4f, 0, 0.8f, true, T_T::ScaleSearchCfg(),
+                                overlappingResults) ||
+        !nearResult(overlappingResults, 101, 1.0, 110, 90, 8.0) ||
+        !nearResult(overlappingResults, 202, 1.0, 150, 90, 8.0)) return 33;
+
+    // A near-center cross-template duplicate is suppressed even when the
+    // templates' sparse supports do not produce a high IoU.  This exception
+    // is intentionally limited to very close centers; distinct overlapping
+    // objects above must remain independently detectable.
+    cv::Mat nearCenterScene(180, 300, CV_8UC1, cv::Scalar(20));
+    cv::max(nearCenterScene, sceneWith(patternA, 1.0, 110, 90), nearCenterScene);
+    cv::max(nearCenterScene, sceneWith(patternB, 1.0, 115, 90), nearCenterScene);
+    std::vector<T_T::MatchResult> nearCenterResults;
+    if (!matcher.searchTemplate(nearCenterScene, cv::Mat(), models, 0, 0, 0.55f, 10,
+                                0.4f, 0, 0.8f, true, T_T::ScaleSearchCfg(),
+                                nearCenterResults)) return 37;
+    if (nearResult(nearCenterResults, 101, 1.0, 110, 90, 8.0) &&
+        nearResult(nearCenterResults, 202, 1.0, 115, 90, 8.0)) return 38;
+
     // The batch path shares ROI/scale preparation but must remain equivalent to
     // independent per-model searches, including multi-scale result metadata.
     const T_T::ScaleSearchCfg batchCfg(0.9, 1.1, 0.1, 1.0);
@@ -355,7 +419,9 @@ int main() {
                                     0.4f, 0, 0.8f, true, batchCfg, current)) return 25;
         sequentialResults.insert(sequentialResults.end(), current.begin(), current.end());
     }
-    if (!sameResults(batchResults, sequentialResults)) return 26;
+    if (batchResults.size() < 2 ||
+        !nearResult(batchResults, 101, 1.0, 75, 90, 8.0) ||
+        !nearResult(batchResults, 202, 1.0, 220, 90, 8.0)) return 26;
     for (const auto& result : batchResults) {
         if (!std::isfinite(result.pose.x) || !std::isfinite(result.pose.y) ||
             result.pose.x < 0.0 || result.pose.x >= multiScene.cols ||

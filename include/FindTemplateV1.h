@@ -235,7 +235,8 @@ namespace SM_V1
          * @brief 过滤掉重叠过大的候选点
          */
         std::vector<T_T::MatchResult> _filterMaxOverLapCandidates(
-            const std::vector<T_T::MatchResult>& input, float max_ovelap, int model_height, int model_width);
+            const std::vector<T_T::MatchResult>& input, float max_ovelap,
+            const T_T::Template::Ptr& model, bool pose_angle_is_output);
 
         /**
          * @brief 高斯滤波
