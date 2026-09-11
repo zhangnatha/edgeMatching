@@ -1383,10 +1383,7 @@ bool CreateTemplate::drawPyramidFeatures(const cv::Mat& template_image,
                 if (static_cast<unsigned>(point.x) < static_cast<unsigned>(tile.cols) &&
                     static_cast<unsigned>(point.y) < static_cast<unsigned>(tile.rows))
                 {
-                    if (level == 0)
-                        cv::circle(tile, point, 1, cv::Scalar(0, 255, 0), -1, cv::LINE_AA);
-                    else
-                        tile.at<cv::Vec3b>(point) = cv::Vec3b(0, 255, 0);
+                    tile.at<cv::Vec3b>(point.y, point.x) = cv::Vec3b(0, 255, 0);
                 }
             }
         }

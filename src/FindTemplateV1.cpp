@@ -2659,24 +2659,54 @@ void calculateDrawingGradients(const cv::Mat& image, cv::Mat& gradientX, cv::Mat
     gradientY.setTo(0.0f, ~valid);
 }
 
-cv::Scalar resultDrawingColor(const T_T::MatchResult& result, size_t index,
-                              int fallbackTemplateId)
+cv::Scalar hsvToBgr(double h, double s, double v)
 {
-    // Explicitly avoid the green/red semantic point colors for object frames.
-    static const cv::Scalar palette[] = {
-        cv::Scalar(255, 190, 0),   // cyan
-        cv::Scalar(220, 70, 20),   // blue
-        cv::Scalar(220, 0, 180),   // magenta
-        cv::Scalar(0, 145, 255),   // orange
-        cv::Scalar(180, 40, 220),  // violet
-        cv::Scalar(0, 220, 255),   // yellow
-        cv::Scalar(255, 130, 55),  // light blue
-        cv::Scalar(190, 90, 255)   // pink
-    };
-    const int id = result.template_id > 0 ? result.template_id : fallbackTemplateId;
-    const size_t hash = static_cast<size_t>(id >= 0 ? id : -static_cast<long long>(id)) *
-                        1315423911ull + index * 17u;
-    return palette[hash % (sizeof(palette) / sizeof(palette[0]))];
+    const double c = v * s;
+    const double x = c * (1.0 - std::abs(std::fmod(h / 60.0, 2.0) - 1.0));
+    const double m = v - c;
+    double r = 0.0, g = 0.0, b = 0.0;
+    if (h < 60.0)       { r = c; g = x; b = 0.0; }
+    else if (h < 120.0) { r = x; g = c; b = 0.0; }
+    else if (h < 180.0) { r = 0.0; g = c; b = x; }
+    else if (h < 240.0) { r = 0.0; g = x; b = c; }
+    else if (h < 300.0) { r = x; g = 0.0; b = c; }
+    else                { r = c; g = 0.0; b = x; }
+    return cv::Scalar(
+        cv::saturate_cast<uchar>((b + m) * 255.0 + 0.5),
+        cv::saturate_cast<uchar>((g + m) * 255.0 + 0.5),
+        cv::saturate_cast<uchar>((r + m) * 255.0 + 0.5));
+}
+
+cv::Scalar resultDrawingColor(const T_T::MatchResult& /*result*/, size_t index,
+                              int /*fallbackTemplateId*/)
+{
+    // Generate a unique, distinct color for each detected target.
+    // Explicitly exclude the green and red semantic point colors used for contour visualization:
+    // Span A: [180°, 325°] (Cyan, Azure, Blue, Violet, Magenta, Deep Pink) -> 145°
+    // Span B: [25°, 50°] (Orange, Amber, Gold) -> 25°
+    const double spanA = 145.0;
+    const double spanB = 25.0;
+    const double totalSpan = spanA + spanB; // 170.0 degrees
+
+    // Use golden ratio low-discrepancy sequence so consecutive indices are maximally separated
+    const double phi = 0.6180339887498948482;
+    double f = std::fmod(static_cast<double>(index) * phi, 1.0);
+    if (f < 0.0) f += 1.0;
+
+    double hDeg = 0.0;
+    if (f < spanA / totalSpan)
+    {
+        hDeg = 180.0 + f * totalSpan;
+    }
+    else
+    {
+        hDeg = 25.0 + (f - spanA / totalSpan) * totalSpan;
+    }
+
+    const double s = 0.85 + 0.15 * std::sin(static_cast<double>(index) * 1.3);
+    const double v = 0.88 + 0.12 * std::cos(static_cast<double>(index) * 1.7);
+
+    return hsvToBgr(hDeg, s, v);
 }
 
 void drawCompactRotatedLabel(cv::Mat& image, const cv::RotatedRect& frame,
@@ -2820,18 +2850,20 @@ void SearchTemplate::_drawMatchResultsImpl(cv::Mat& image, const cv::Mat& gradie
                     const float sy = gradientY.at<float>(y, x);
                     const float similarity = sx * point.edge_dx + sy * point.edge_dy;
                     // Semantic contour colors are independent of the per-result box color:
-                    // green = strong, yellow = usable, red/larger = poor or missing edge.
-                    cv::Scalar pointColor;
-                    int radius = 1;
-                    if (similarity >= 0.8f) pointColor = cv::Scalar(0, 255, 0);
-                    else if (similarity >= 0.4f) pointColor = cv::Scalar(0, 255, 255);
-                    else
+                    // green = strong, yellow = usable, red = poor or missing edge.
+                    cv::Vec3b pointColor;
+                    if (similarity >= 0.8f) pointColor = cv::Vec3b(0, 255, 0);
+                    else if (similarity >= 0.4f) pointColor = cv::Vec3b(0, 255, 255);
+                    else pointColor = cv::Vec3b(0, 0, 255);
+
+                    if (image.type() == CV_8UC3)
                     {
-                        pointColor = cv::Scalar(0, 0, 255);
-                        radius = 2;
+                        image.at<cv::Vec3b>(y, x) = pointColor;
                     }
-                    cv::circle(image, cv::Point(x, y), radius, pointColor,
-                               cv::FILLED, cv::LINE_AA);
+                    else if (image.type() == CV_8UC1)
+                    {
+                        image.at<uchar>(y, x) = 255;
+                    }
                 }
             }
         }

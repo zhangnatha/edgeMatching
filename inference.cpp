@@ -3,6 +3,7 @@
 #include <opencv2/opencv.hpp>
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -11,6 +12,61 @@
 #include <set>
 
 namespace {
+std::string getCpuInfo()
+{
+    static std::string cachedCpu;
+    if (!cachedCpu.empty()) return cachedCpu;
+
+    std::ifstream file("/proc/cpuinfo");
+    if (file.is_open())
+    {
+        std::string line;
+        while (std::getline(file, line))
+        {
+            if (line.compare(0, 10, "model name") == 0 ||
+                line.compare(0, 9, "Processor") == 0 ||
+                line.compare(0, 8, "Hardware") == 0 ||
+                line.compare(0, 7, "Model") == 0)
+            {
+                size_t colon = line.find(':');
+                if (colon != std::string::npos)
+                {
+                    size_t start = line.find_first_not_of(" \t", colon + 1);
+                    if (start != std::string::npos)
+                    {
+                        std::string raw = line.substr(start);
+                        while (!raw.empty() && (raw.back() == '\r' || raw.back() == '\n' ||
+                                                raw.back() == ' ' || raw.back() == '\t'))
+                            raw.pop_back();
+                        std::string clean;
+                        bool inSpace = false;
+                        for (char c : raw)
+                        {
+                            if (c == ' ' || c == '\t')
+                            {
+                                if (!inSpace) { clean.push_back(' '); inSpace = true; }
+                            }
+                            else
+                            {
+                                clean.push_back(c);
+                                inSpace = false;
+                            }
+                        }
+                        if (!clean.empty())
+                        {
+                            cachedCpu = clean;
+                            return cachedCpu;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    const int ncpus = cv::getNumberOfCPUs();
+    cachedCpu = "CPU (" + std::to_string(ncpus) + " cores)";
+    return cachedCpu;
+}
+
 void usage(const char* p) {
     std::cout << "Usage: " << p << " [search_image] [model1.json model2.json ...]"
               << " [--min-score N] [--max-overlap N]"
@@ -52,12 +108,22 @@ void drawInfoPanel(cv::Mat& image, double elapsedMs,
     const int pad = std::max(10, static_cast<int>(std::round(shortSide * 0.025)));
     const int lineGap = std::max(4, static_cast<int>(std::round(shortSide * 0.010)));
     double fontScale = std::max(0.25, std::min(0.80, shortSide / 900.0));
-    const std::string timeLine = "Time: " + [&]() {
+    const std::string resolutionLine = "Resolution: " + std::to_string(image.cols) + "x" + std::to_string(image.rows);
+    const std::string cpuLine = "CPU: " + getCpuInfo();
+    const std::string timeLine = "Cost Time: " + [&]() {
         std::ostringstream ss;
         ss << std::fixed << std::setprecision(3) << elapsedMs << " ms";
         return ss.str();
     }();
     const std::string countLine = "Matches: " + std::to_string(results.size());
+    const std::vector<std::string> headerLines = {
+        resolutionLine,
+        cpuLine,
+        timeLine,
+        countLine
+    };
+    const int headerLineCount = static_cast<int>(headerLines.size());
+
     std::vector<std::string> details;
     for (size_t index = 0; index < results.size(); ++index)
         details.push_back(matchDetail(index, results[index]));
@@ -75,10 +141,10 @@ void drawInfoPanel(cv::Mat& image, double elapsedMs,
         sample = cv::getTextSize("Ag", cv::FONT_HERSHEY_SIMPLEX,
                                  fontScale, thickness, &baseline);
         lineHeight = sample.height + baseline + lineGap;
-        if (2 * pad + 3 * lineHeight <= image.rows) break;
+        if (2 * pad + (headerLineCount + 1) * lineHeight <= image.rows) break;
         fontScale *= 0.88;
     }
-    const int detailTop = pad + 2 * lineHeight + lineGap;
+    const int detailTop = pad + headerLineCount * lineHeight + lineGap;
     const int rowsPerColumn = std::max(1, (image.rows - detailTop - pad) / lineHeight);
     const int columnCount = details.empty() ? 0 :
         (static_cast<int>(details.size()) + rowsPerColumn - 1) / rowsPerColumn;
@@ -94,11 +160,13 @@ void drawInfoPanel(cv::Mat& image, double elapsedMs,
     int detailWidth = 0;
     for (const int width : columnWidths) detailWidth += width;
     if (columnCount > 1) detailWidth += (columnCount - 1) * columnGap;
-    const int headerWidth = std::max(
-        cv::getTextSize(timeLine, cv::FONT_HERSHEY_SIMPLEX,
-                        fontScale, thickness, &baseline).width,
-        cv::getTextSize(countLine, cv::FONT_HERSHEY_SIMPLEX,
-                        fontScale, thickness, &baseline).width);
+    int headerWidth = 0;
+    for (const auto& hline : headerLines)
+    {
+        headerWidth = std::max(headerWidth,
+            cv::getTextSize(hline, cv::FONT_HERSHEY_SIMPLEX,
+                            fontScale, thickness, &baseline).width);
+    }
     const int panelWidth = std::max(150, 2 * pad + std::max(headerWidth, detailWidth));
 
     cv::Mat expanded(image.rows, image.cols + panelWidth, image.type(),
@@ -110,11 +178,12 @@ void drawInfoPanel(cv::Mat& image, double elapsedMs,
              cv::Scalar(70, 78, 92), 1, cv::LINE_AA);
 
     int y = pad + sample.height;
-    cv::putText(expanded, timeLine, cv::Point(pad, y), cv::FONT_HERSHEY_SIMPLEX,
-                fontScale, cv::Scalar(238, 242, 248), thickness, cv::LINE_AA);
-    y += lineHeight;
-    cv::putText(expanded, countLine, cv::Point(pad, y), cv::FONT_HERSHEY_SIMPLEX,
-                fontScale, cv::Scalar(238, 242, 248), thickness, cv::LINE_AA);
+    for (const auto& hline : headerLines)
+    {
+        cv::putText(expanded, hline, cv::Point(pad, y), cv::FONT_HERSHEY_SIMPLEX,
+                    fontScale, cv::Scalar(238, 242, 248), thickness, cv::LINE_AA);
+        y += lineHeight;
+    }
     cv::line(expanded, cv::Point(pad, detailTop - lineGap),
              cv::Point(panelWidth - pad, detailTop - lineGap),
              cv::Scalar(70, 78, 92), 1, cv::LINE_AA);
