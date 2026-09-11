@@ -4,8 +4,14 @@
 #include <omp.h>
 #include <thread>
 #include <fstream>
-#include <immintrin.h>
 #include <set>
+
+#ifndef SHAPE_MATCH_ENABLE_SIMD
+#define SHAPE_MATCH_ENABLE_SIMD 0
+#endif
+#if SHAPE_MATCH_ENABLE_SIMD
+#include <immintrin.h>
+#endif
 
 using namespace SM_V1;
 
@@ -334,7 +340,8 @@ void SearchTemplate::_getFeature(
     uint8_t* pInput = (uint8_t*)malloc(bufferSize * sizeof(uint8_t));
 
     uint8_t* SearchImage = static_cast<uint8_t*>(search_image.data);
-    _gaussianFilter(SearchImage, pInput, width, height, true);
+    _gaussianFilter(SearchImage, pInput, width, height,
+                    SHAPE_MATCH_ENABLE_SIMD != 0);
 
     // 待测图像的掩模图
     uint8_t* maskdata = static_cast<uint8_t*>(mask_image.data);
@@ -342,6 +349,7 @@ void SearchTemplate::_getFeature(
     p_buf_magnitude.assign(bufferSize, 0.0f);
 
     // 提取待测图像的梯度信息
+#if SHAPE_MATCH_ENABLE_SIMD
     if (useSIMD)
     {
         const __m256  vZero   = _mm256_setzero_ps();
@@ -458,9 +466,11 @@ void SearchTemplate::_getFeature(
         free(pInput);
         return;
     }
+#else
+    (void)useSIMD;
+#endif
 
-    // Scalar fallback. All current call sites request the SIMD feature extractor,
-    // but keep this path correct for debug builds and future non-AVX dispatch.
+    // Portable scalar fallback used when SIMD is disabled or not requested.
     for (int i = 1; i < width - 1; i++)
     {
         for (int j = 1; j < height - 1; j++)
@@ -484,6 +494,7 @@ void SearchTemplate::_getFeature(
     free(pInput);
 }
 
+#if SHAPE_MATCH_ENABLE_SIMD
 // 水平求和函数 __m256
 static inline float hsum_ps_avx(__m256 v) {
     __m128 lo = _mm256_castps256_ps128(v);
@@ -493,6 +504,7 @@ static inline float hsum_ps_avx(__m256 v) {
     lo = _mm_hadd_ps(lo, lo);
     return _mm_cvtss_f32(lo);
 }
+#endif
 
 // 待测图像精匹配
 bool SearchTemplate::_fineMatching(
@@ -524,7 +536,7 @@ bool SearchTemplate::_fineMatching(
 
     // 获取每个像素的梯度信息：dx/dy
     _getFeature(search_image, mask_image, width, height, pBufGradX_new, pBufGradY_new,
-                pBufMagnitude_new, true);
+                pBufMagnitude_new, SHAPE_MATCH_ENABLE_SIMD != 0);
 
     cv::Mat validMask, validIntegral;
     if (variable_visibility_)
@@ -659,6 +671,7 @@ bool SearchTemplate::_fineMatching(
                 bool rejectedByGreediness = false;
                 const bool fixedDenominator = rectangleIsVisible(
                     i + min_dx, j + min_dy, i + max_dx, j + max_dy);
+#if SHAPE_MATCH_ENABLE_SIMD
                 const bool fastSIMD = useSIMD && fixedDenominator &&
                                       search_min_contrast_ == 0 &&
                                       metric_ == I_I::USE_POLARITY;
@@ -710,6 +723,9 @@ bool SearchTemplate::_fineMatching(
                     visibleCount = point_size;
                 }
                 else
+#else
+                (void)useSIMD;
+#endif
                 {
                     for (int m = 0; m < point_size; ++m)
                     {
@@ -830,7 +846,7 @@ void SearchTemplate::_coarseMatching(
 
     // 提取sobel梯度信息
     _getFeature(search_image, mask_image, width, height, pBufGradX, pBufGradY,
-                pBufMagnitude, true);
+                pBufMagnitude, SHAPE_MATCH_ENABLE_SIMD != 0);
 
     cv::Mat validMask, validIntegral;
     if (variable_visibility_)
@@ -1182,7 +1198,8 @@ bool SearchTemplate::_coarse2FineMatching(
     // 待测图像精匹配
     T_T::MatchResult currentLevelResult;
     if (!_fineMatching(cropImage, cropMask, pInfoPy, py_levels, cropImgW, cropImgH,
-                       min_score, greediness, SearchRegion, &currentLevelResult, false))
+                       min_score, greediness, SearchRegion, &currentLevelResult,
+                       SHAPE_MATCH_ENABLE_SIMD != 0))
         return false;
     *result_list_low = currentLevelResult;
 #if SHAPE_MATCH_VISUALIZE_FINE

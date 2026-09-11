@@ -206,6 +206,23 @@ int main() {
     }
 
     SM_V1::SearchTemplate matcher;
+    // The optional AVX2 extractor must remain numerically equivalent to the
+    // portable implementation.  In a scalar build both calls intentionally
+    // select the same fallback path.
+    std::vector<float> scalarGradX(patternA.total()), scalarGradY(patternA.total()), scalarMagnitude;
+    std::vector<float> simdGradX(patternA.total()), simdGradY(patternA.total()), simdMagnitude;
+    matcher._getFeature(patternA, defaultMask, patternA.cols, patternA.rows,
+                        scalarGradX, scalarGradY, scalarMagnitude, false);
+    matcher._getFeature(patternA, defaultMask, patternA.cols, patternA.rows,
+                        simdGradX, simdGradY, simdMagnitude, true);
+    if (scalarGradX.size() != simdGradX.size() || scalarGradY.size() != simdGradY.size() ||
+        scalarMagnitude.size() != simdMagnitude.size()) return 42;
+    for (size_t i = 0; i < scalarGradX.size(); ++i)
+    {
+        if (std::abs(scalarGradX[i] - simdGradX[i]) > 2e-5f ||
+            std::abs(scalarGradY[i] - simdGradY[i]) > 2e-5f ||
+            std::abs(scalarMagnitude[i] - simdMagnitude[i]) > 2e-5f) return 43;
+    }
     // The original five-argument constructor remains source-compatible.
     const T_T::ScaleSearchCfg legacyCfg(1.0, 1.0, 1.0, 1.0, false);
     const cv::Mat compatibilityScene = sceneWith(patternA, 1.0, 145, 90);

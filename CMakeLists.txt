@@ -2,10 +2,25 @@ cmake_minimum_required(VERSION 3.10)
 project(shapeMatch)
 
 include(CTest)
+include(CheckCXXCompilerFlag)
 
 option(SHAPE_MATCH_VISUALIZE_COARSE "Show coarse matching candidates while inference runs" OFF)
 option(SHAPE_MATCH_VISUALIZE_FINE "Show each coarse-to-fine refinement step" OFF)
 option(SHAPE_MATCH_ENABLE_SUBPIXEL "Enable subpixel feature refinement and matching" OFF)
+option(SHAPE_MATCH_ENABLE_SIMD "Enable x86 AVX2 SIMD acceleration" OFF)
+
+if(SHAPE_MATCH_ENABLE_SIMD)
+    if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|x86|i[3-6]86)$")
+        message(FATAL_ERROR
+            "SHAPE_MATCH_ENABLE_SIMD=ON requires an x86/x86_64 target; "
+            "CMAKE_SYSTEM_PROCESSOR='${CMAKE_SYSTEM_PROCESSOR}'")
+    endif()
+    check_cxx_compiler_flag("-mavx2" SHAPE_MATCH_COMPILER_SUPPORTS_AVX2)
+    if(NOT SHAPE_MATCH_COMPILER_SUPPORTS_AVX2)
+        message(FATAL_ERROR
+            "SHAPE_MATCH_ENABLE_SIMD=ON requires compiler support for -mavx2")
+    endif()
+endif()
 
 # --- C++ 标准 ---
 set(CMAKE_CXX_STANDARD 11)
@@ -22,12 +37,13 @@ include_directories(
 )
 
 # --- 编译器选项 ---
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -march=native -fopenmp -msse -msse2 -msse3 -msse4 -mavx -O3 -fPIC")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -fopenmp -O3 -fPIC")
 
 # --- 输出构建信息 ---
 message(STATUS "Project: ${PROJECT_NAME}")
 message(STATUS "OpenCV_LIBRARIES = ${OpenCV_LIBRARIES}")
 message(STATUS "SHAPE_MATCH_ENABLE_SUBPIXEL = ${SHAPE_MATCH_ENABLE_SUBPIXEL}")
+message(STATUS "SHAPE_MATCH_ENABLE_SIMD = ${SHAPE_MATCH_ENABLE_SIMD}")
 
 # --- 构建共享库 ---
 add_library(MakeTemplate SHARED
@@ -44,10 +60,14 @@ add_library(FindTemplate SHARED
 target_compile_definitions(FindTemplate PRIVATE
     SHAPE_MATCH_VISUALIZE_COARSE=$<BOOL:${SHAPE_MATCH_VISUALIZE_COARSE}>
     SHAPE_MATCH_VISUALIZE_FINE=$<BOOL:${SHAPE_MATCH_VISUALIZE_FINE}>
+    SHAPE_MATCH_ENABLE_SIMD=$<BOOL:${SHAPE_MATCH_ENABLE_SIMD}>
 )
 target_compile_definitions(FindTemplate PUBLIC
     SHAPE_MATCH_ENABLE_SUBPIXEL=$<BOOL:${SHAPE_MATCH_ENABLE_SUBPIXEL}>
 )
+if(SHAPE_MATCH_ENABLE_SIMD)
+    target_compile_options(FindTemplate PRIVATE -mavx2)
+endif()
 target_link_libraries(FindTemplate ${OpenCV_LIBRARIES})
 
 # --- 构建可执行文件 ---

@@ -141,6 +141,19 @@ cmake --build build-subpixel --parallel
 关闭时，库会忽略 `ScaleSearchCfg::subpixel_refine=true` 并保持离散匹配行为；命令行
 `--subpixel` 会明确拒绝并提示使用上述选项重新编译。开启后才编译亚像素位置、角度和尺度精修代码。
 
+SIMD 加速由编译选项 `SHAPE_MATCH_ENABLE_SIMD` 控制，默认 `OFF`。关闭时使用可移植的标量实现，
+不会加入 `-march=native`、`-mavx*` 等 x86 指令集选项，也不会编译 x86 intrinsic；因此可在 ARM 等
+非 x86 平台构建。x86/x86_64 平台可按需开启 AVX2 加速：
+
+```bash
+cmake -S . -B build-simd -DSHAPE_MATCH_ENABLE_SIMD=ON -DBUILD_TESTING=ON
+cmake --build build-simd --parallel
+ctest --test-dir build-simd --output-on-failure
+```
+
+开启 SIMD 时，CMake 会检查目标处理器为 x86/x86_64 且编译器支持 `-mavx2`；不满足条件会在配置阶段
+明确失败。SIMD 与 OpenMP 独立控制，OpenMP 的现有行为不受此选项影响。
+
 ## 程序使用
 
 训练程序示例：
@@ -477,14 +490,17 @@ ctest --test-dir build --output-on-failure
 也可以绕过 CMake，手动编译共享库和可执行文件：
 
 ```bash
-g++ -std=c++11 -O3 -fopenmp -fPIC -march=native -msse -msse2 -msse3 -msse4 -mavx -o libMakeTemplateV1.so -shared src/MakeTemplateV1.cpp \
+g++ -std=c++11 -O3 -fopenmp -fPIC -o libMakeTemplateV1.so -shared src/MakeTemplateV1.cpp \
 -I./include -I./3rdparty/opencv/include -L./3rdparty/opencv/lib \
 -lopencv_core -lopencv_imgproc -lopencv_highgui -lopencv_imgcodecs -lopencv_calib3d -pthread
 
-g++ -std=c++11 -O3 -fopenmp -fPIC -march=native -msse -msse2 -msse3 -msse4 -mavx -o libFindTemplateV1.so -shared src/FindTemplateV1.cpp \
+g++ -std=c++11 -O3 -fopenmp -fPIC -o libFindTemplateV1.so -shared src/FindTemplateV1.cpp \
 -I./include -I./3rdparty/opencv/include -L./3rdparty/opencv/lib \
 -lopencv_core -lopencv_imgproc -lopencv_highgui -lopencv_imgcodecs -lopencv_calib3d -pthread
 ```
+
+手动编译时如需在 x86/x86_64 平台启用 SIMD，将两个库的编译命令都追加
+`-DSHAPE_MATCH_ENABLE_SIMD=1 -mavx2`；其他平台保持上述标量命令。
 
 ## 性能参考
 
