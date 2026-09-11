@@ -8,6 +8,20 @@ option(SHAPE_MATCH_VISUALIZE_COARSE "Show coarse matching candidates while infer
 option(SHAPE_MATCH_VISUALIZE_FINE "Show each coarse-to-fine refinement step" OFF)
 option(SHAPE_MATCH_ENABLE_SUBPIXEL "Enable subpixel feature refinement and matching" OFF)
 option(SHAPE_MATCH_ENABLE_SIMD "Enable x86 AVX2 SIMD acceleration" OFF)
+set(SHAPE_MATCH_EDGE_METHOD "CURRENT" CACHE STRING
+    "Edge feature backend: CURRENT or DEVERNAY")
+set_property(CACHE SHAPE_MATCH_EDGE_METHOD PROPERTY STRINGS CURRENT DEVERNAY)
+string(TOUPPER "${SHAPE_MATCH_EDGE_METHOD}" SHAPE_MATCH_EDGE_METHOD_NORMALIZED)
+if(NOT SHAPE_MATCH_EDGE_METHOD_NORMALIZED STREQUAL "CURRENT" AND
+   NOT SHAPE_MATCH_EDGE_METHOD_NORMALIZED STREQUAL "DEVERNAY")
+    message(FATAL_ERROR
+        "SHAPE_MATCH_EDGE_METHOD must be CURRENT or DEVERNAY; got '${SHAPE_MATCH_EDGE_METHOD}'")
+endif()
+if(SHAPE_MATCH_EDGE_METHOD_NORMALIZED STREQUAL "DEVERNAY")
+    set(SHAPE_MATCH_EDGE_METHOD_DEVERNAY 1)
+else()
+    set(SHAPE_MATCH_EDGE_METHOD_DEVERNAY 0)
+endif()
 
 if(SHAPE_MATCH_ENABLE_SIMD)
     if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|x86|i[3-6]86)$")
@@ -44,6 +58,7 @@ message(STATUS "Project: ${PROJECT_NAME}")
 message(STATUS "OpenCV_LIBRARIES = ${OpenCV_LIBRARIES}")
 message(STATUS "SHAPE_MATCH_ENABLE_SUBPIXEL = ${SHAPE_MATCH_ENABLE_SUBPIXEL}")
 message(STATUS "SHAPE_MATCH_ENABLE_SIMD = ${SHAPE_MATCH_ENABLE_SIMD}")
+message(STATUS "SHAPE_MATCH_EDGE_METHOD = ${SHAPE_MATCH_EDGE_METHOD_NORMALIZED}")
 
 # --- 构建共享库 ---
 add_library(MakeTemplate SHARED
@@ -51,6 +66,9 @@ add_library(MakeTemplate SHARED
 )
 target_compile_definitions(MakeTemplate PUBLIC
     SHAPE_MATCH_ENABLE_SUBPIXEL=$<BOOL:${SHAPE_MATCH_ENABLE_SUBPIXEL}>
+)
+target_compile_definitions(MakeTemplate PRIVATE
+    SHAPE_MATCH_EDGE_METHOD_DEVERNAY=${SHAPE_MATCH_EDGE_METHOD_DEVERNAY}
 )
 target_link_libraries(MakeTemplate ${OpenCV_LIBRARIES})
 
@@ -61,6 +79,7 @@ target_compile_definitions(FindTemplate PRIVATE
     SHAPE_MATCH_VISUALIZE_COARSE=$<BOOL:${SHAPE_MATCH_VISUALIZE_COARSE}>
     SHAPE_MATCH_VISUALIZE_FINE=$<BOOL:${SHAPE_MATCH_VISUALIZE_FINE}>
     SHAPE_MATCH_ENABLE_SIMD=$<BOOL:${SHAPE_MATCH_ENABLE_SIMD}>
+    SHAPE_MATCH_EDGE_METHOD_DEVERNAY=${SHAPE_MATCH_EDGE_METHOD_DEVERNAY}
 )
 target_compile_definitions(FindTemplate PUBLIC
     SHAPE_MATCH_ENABLE_SUBPIXEL=$<BOOL:${SHAPE_MATCH_ENABLE_SUBPIXEL}>
@@ -79,15 +98,23 @@ target_link_libraries(inference FindTemplate ${OpenCV_LIBRARIES})
 
 if(BUILD_TESTING)
     add_executable(test_matching tests/test_matching.cpp)
+    target_compile_definitions(test_matching PRIVATE
+        SHAPE_MATCH_EDGE_METHOD_DEVERNAY=${SHAPE_MATCH_EDGE_METHOD_DEVERNAY})
     target_link_libraries(test_matching MakeTemplate FindTemplate ${OpenCV_LIBRARIES})
     add_executable(test_intermediate_threshold tests/test_intermediate_threshold.cpp)
     target_compile_definitions(test_intermediate_threshold PRIVATE
-        ASSERT_DIR="${CMAKE_SOURCE_DIR}/assert")
+        ASSERT_DIR="${CMAKE_SOURCE_DIR}/assert"
+        SHAPE_MATCH_EDGE_METHOD_DEVERNAY=${SHAPE_MATCH_EDGE_METHOD_DEVERNAY})
     target_link_libraries(test_intermediate_threshold MakeTemplate FindTemplate ${OpenCV_LIBRARIES})
+    add_executable(test_devernay tests/test_devernay.cpp)
+    target_compile_definitions(test_devernay PRIVATE
+        SHAPE_MATCH_EDGE_METHOD_DEVERNAY=${SHAPE_MATCH_EDGE_METHOD_DEVERNAY})
+    target_link_libraries(test_devernay MakeTemplate ${OpenCV_LIBRARIES})
     add_executable(benchmark_matching tests/benchmark_matching.cpp)
     target_link_libraries(benchmark_matching FindTemplate ${OpenCV_LIBRARIES})
     add_test(NAME matching_regression COMMAND test_matching)
     add_test(NAME intermediate_threshold_regression COMMAND test_intermediate_threshold)
+    add_test(NAME devernay_edge_regression COMMAND test_devernay)
     add_test(NAME cli_reject_negative_contrast COMMAND inference --min-contrast -1)
     add_test(NAME cli_reject_large_contrast COMMAND inference --min-contrast 362)
     add_test(NAME cli_reject_fractional_contrast COMMAND inference --min-contrast 1.5)

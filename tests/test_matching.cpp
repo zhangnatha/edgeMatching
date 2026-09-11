@@ -14,6 +14,9 @@
 #ifndef SHAPE_MATCH_ENABLE_SUBPIXEL
 #define SHAPE_MATCH_ENABLE_SUBPIXEL 0
 #endif
+#ifndef SHAPE_MATCH_EDGE_METHOD_DEVERNAY
+#define SHAPE_MATCH_EDGE_METHOD_DEVERNAY 0
+#endif
 
 namespace {
 cv::Mat makePattern(bool alternate) {
@@ -117,7 +120,7 @@ int main() {
     auto modelB = train(patternB, 202);
     if (!modelA || !modelB) return 1;
     if (modelA->template_cfg.id != 101 || modelB->template_cfg.id != 202) return 2;
-#if SHAPE_MATCH_ENABLE_SUBPIXEL
+#if SHAPE_MATCH_ENABLE_SUBPIXEL || SHAPE_MATCH_EDGE_METHOD_DEVERNAY
     if (!hasFractionalFeature(modelA) || !hasFractionalFeature(modelB)) return 14;
 #else
     if (hasFractionalFeature(modelA) || hasFractionalFeature(modelB)) return 41;

@@ -154,6 +154,34 @@ ctest --test-dir build-simd --output-on-failure
 开启 SIMD 时，CMake 会检查目标处理器为 x86/x86_64 且编译器支持 `-mavx2`；不满足条件会在配置阶段
 明确失败。SIMD 与 OpenMP 独立控制，OpenMP 的现有行为不受此选项影响。
 
+边缘特征后端由 `SHAPE_MATCH_EDGE_METHOD` 编译选项选择，默认值为 `CURRENT`。`CURRENT` 保持原有
+的整数像素 Canny 风格特征提取；`DEVERNAY` 使用独立实现的连续梯度方向 NMS、双阈值滞后连接和
+法线方向二次拟合，模板特征坐标可以是亚像素值。两个库必须使用相同的后端配置：
+
+```bash
+# 默认/兼容模式
+cmake -S . -B build-current \
+  -DSHAPE_MATCH_EDGE_METHOD=CURRENT -DSHAPE_MATCH_ENABLE_SIMD=OFF -DBUILD_TESTING=ON
+cmake --build build-current --parallel
+
+# Devernay 亚像素边缘特征模式（可与 SUBPIXEL 精修开关独立设置）
+cmake -S . -B build-devernay \
+  -DSHAPE_MATCH_EDGE_METHOD=DEVERNAY -DSHAPE_MATCH_ENABLE_SIMD=OFF -DBUILD_TESTING=ON
+cmake --build build-devernay --parallel
+ctest --test-dir build-devernay --output-on-failure
+```
+
+边缘后端写入模板模型的特征数据，切换 `CURRENT`/`DEVERNAY` 后必须使用相同后端重新制作并保存
+模板，不能混用已有模型。`SHAPE_MATCH_ENABLE_SUBPIXEL` 只控制匹配时的位姿精修；DEVERNAY 的
+模板边缘坐标本身始终保留亚像素结果。
+
+Devernay/Canny 流程仅参考以下公开资料的算法原理，仓库未复制第三方实现代码：
+
+- [fcqing/sub-pixel-edge-detect](https://github.com/fcqing/sub-pixel-edge-detect)：仓库页面未声明
+  `LICENSE`，因此不作为代码依赖或代码来源。
+- [spartajet/subpixel-edge](https://github.com/spartajet/subpixel-edge)：该仓库声明 MIT 或 Apache-2.0
+  双许可证；本项目不复制其代码，也不引入其 Rust 依赖。
+
 ## 程序使用
 
 训练程序示例：

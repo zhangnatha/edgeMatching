@@ -2,13 +2,170 @@
 #include <omp.h>
 #include <thread>
 #include <fstream>
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <vector>
 
 #ifndef SHAPE_MATCH_ENABLE_SUBPIXEL
 #define SHAPE_MATCH_ENABLE_SUBPIXEL 0
 #endif
+#ifndef SHAPE_MATCH_EDGE_METHOD_DEVERNAY
+#define SHAPE_MATCH_EDGE_METHOD_DEVERNAY 0
+#endif
 
 using namespace SM_V1;
+
+namespace
+{
+// Bilinear sampling is deliberately kept local to the Devernay backend.  The
+// matcher continues to use its dense gradient field, rather than this sparse
+// NMS response, so fractional-pixel matching remains supported.
+bool sampleMagnitude(const std::vector<float>& magnitude, int width, int height,
+                     double x, double y, float& value)
+{
+    if (x < 0.0 || y < 0.0 || x >= width - 1.0 || y >= height - 1.0) return false;
+    const int x0 = static_cast<int>(std::floor(x));
+    const int y0 = static_cast<int>(std::floor(y));
+    const double ax = x - x0;
+    const double ay = y - y0;
+    const float v00 = magnitude[y0 * width + x0];
+    const float v10 = magnitude[y0 * width + x0 + 1];
+    const float v01 = magnitude[(y0 + 1) * width + x0];
+    const float v11 = magnitude[(y0 + 1) * width + x0 + 1];
+    value = static_cast<float>((1.0 - ay) * ((1.0 - ax) * v00 + ax * v10) +
+                               ay * ((1.0 - ax) * v01 + ax * v11));
+    return std::isfinite(value);
+}
+
+// Independent implementation of the Devernay-style subpixel edge detector:
+// smoothed image -> central-difference gradient -> interpolated NMS -> Canny
+// hysteresis -> quadratic localization along the gradient normal.
+std::vector<T_T::TemplateFeatures> extractDevernayFeatures(
+    const cv::Mat& image, const cv::Mat& mask, int minContrast, int maxContrast)
+{
+    std::vector<T_T::TemplateFeatures> features;
+    if (image.empty() || image.type() != CV_8UC1 || mask.empty() ||
+        mask.size() != image.size() || mask.type() != CV_8UC1 ||
+        image.cols < 5 || image.rows < 5) return features;
+
+    const int width = image.cols;
+    const int height = image.rows;
+    const size_t count = static_cast<size_t>(width) * height;
+    std::vector<uint8_t> smooth(count, 0);
+    const int kernel[25] = {1, 4, 7, 4, 1, 4, 16, 26, 16, 4,
+                            7, 26, 41, 26, 7, 4, 16, 26, 16, 4,
+                            1, 4, 7, 4, 1};
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x)
+            smooth[static_cast<size_t>(y) * width + x] = image.at<unsigned char>(y, x);
+    for (int y = 2; y < height - 2; ++y)
+        for (int x = 2; x < width - 2; ++x)
+        {
+            int sum = 0;
+            int k = 0;
+            for (int yy = y - 2; yy <= y + 2; ++yy)
+                for (int xx = x - 2; xx <= x + 2; ++xx)
+                    sum += image.at<unsigned char>(yy, xx) * kernel[k++];
+            smooth[y * width + x] = static_cast<uint8_t>(sum / 273);
+        }
+
+    std::vector<float> gradX(count, 0.0f), gradY(count, 0.0f), magnitude(count, 0.0f);
+    float maxMagnitude = 0.0f;
+    for (int y = 1; y < height - 1; ++y)
+        for (int x = 1; x < width - 1; ++x)
+        {
+            const size_t index = static_cast<size_t>(y) * width + x;
+            if (mask.at<unsigned char>(y, x) != 255) continue;
+            const float dx = static_cast<float>(smooth[index + 1]) - smooth[index - 1];
+            const float dy = static_cast<float>(smooth[index + width]) - smooth[index - width];
+            const float mag = std::sqrt(dx * dx + dy * dy);
+            gradX[index] = dx;
+            gradY[index] = dy;
+            magnitude[index] = mag;
+            maxMagnitude = std::max(maxMagnitude, mag);
+        }
+    if (!(maxMagnitude > 1e-6f) || !std::isfinite(maxMagnitude)) return features;
+
+    // Interpolated non-maximum suppression in the continuous gradient-normal
+    // direction, instead of quantizing to 0/45/90/135 degrees.
+    std::vector<float> nms(count, 0.0f);
+    for (int y = 1; y < height - 1; ++y)
+        for (int x = 1; x < width - 1; ++x)
+        {
+            const size_t index = static_cast<size_t>(y) * width + x;
+            const float mag = magnitude[index];
+            if (!(mag > 1e-6f)) continue;
+            const float nx = gradX[index] / mag;
+            const float ny = gradY[index] / mag;
+            float minus = 0.0f, plus = 0.0f;
+            if (!sampleMagnitude(magnitude, width, height, x - nx, y - ny, minus) ||
+                !sampleMagnitude(magnitude, width, height, x + nx, y + ny, plus)) continue;
+            if (mag >= minus && mag >= plus) nms[index] = mag;
+        }
+
+    // Thresholds retain the existing public convention: contrast values are
+    // percentages of the strongest gradient (0..255).
+    const float low = static_cast<float>(std::max(0, minContrast)) / 255.0f * maxMagnitude;
+    const float high = static_cast<float>(std::max(0, maxContrast)) / 255.0f * maxMagnitude;
+    std::vector<unsigned char> state(count, 0); // 1=weak, 2=strong/connected
+    std::vector<size_t> pending;
+    for (int y = 1; y < height - 1; ++y)
+        for (int x = 1; x < width - 1; ++x)
+        {
+            const size_t index = static_cast<size_t>(y) * width + x;
+            if (mask.at<unsigned char>(y, x) != 255 || !(nms[index] >= low)) continue;
+            state[index] = nms[index] >= high ? 2 : 1;
+            if (state[index] == 2) pending.push_back(index);
+        }
+    for (size_t head = 0; head < pending.size(); ++head)
+    {
+        const int x = static_cast<int>(pending[head] % width);
+        const int y = static_cast<int>(pending[head] / width);
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx)
+            {
+                if (dx == 0 && dy == 0) continue;
+                const int xx = x + dx, yy = y + dy;
+                if (xx < 1 || xx >= width - 1 || yy < 1 || yy >= height - 1) continue;
+                const size_t neighbor = static_cast<size_t>(yy) * width + xx;
+                if (state[neighbor] == 1)
+                {
+                    state[neighbor] = 2;
+                    pending.push_back(neighbor);
+                }
+            }
+    }
+
+    features.reserve(pending.size());
+    for (int y = 1; y < height - 1; ++y)
+        for (int x = 1; x < width - 1; ++x)
+        {
+            const size_t index = static_cast<size_t>(y) * width + x;
+            if (state[index] != 2) continue;
+            const float mag = magnitude[index];
+            if (!(mag > 1e-6f)) continue;
+            const float nx = gradX[index] / mag;
+            const float ny = gradY[index] / mag;
+            float minus = 0.0f, plus = 0.0f;
+            if (!sampleMagnitude(magnitude, width, height, x - nx, y - ny, minus) ||
+                !sampleMagnitude(magnitude, width, height, x + nx, y + ny, plus)) continue;
+            const float denominator = minus - 2.0f * mag + plus;
+            float offset = 0.0f;
+            if (denominator < -1e-6f)
+            {
+                const float candidate = 0.5f * (minus - plus) / denominator;
+                if (std::isfinite(candidate) && std::fabs(candidate) <= 0.5f)
+                    offset = candidate;
+            }
+            features.push_back({static_cast<float>(x) + offset * nx,
+                                static_cast<float>(y) + offset * ny,
+                                nx, ny, 1.0f});
+        }
+    return features;
+}
+}
 
 CreateTemplate::CreateTemplate() = default;
 CreateTemplate::~CreateTemplate() = default;
@@ -108,6 +265,26 @@ void CreateTemplate::_extractShapeInfo(
     int width = image_data.cols;
     int height = image_data.rows;
     int32_t buffer_size = image_data.cols * image_data.rows;
+
+#if SHAPE_MATCH_EDGE_METHOD_DEVERNAY
+    // Devernay features are already localized in image coordinates.  Keep the
+    // same center-origin model representation and unit gradient convention as
+    // the CURRENT backend so serialized models and rotated caches are shared.
+    const cv::Mat mask_view(height, width, CV_8UC1, mask_data);
+    const std::vector<T_T::TemplateFeatures> devernay_features =
+        extractDevernayFeatures(image_data, mask_view, min_contrast, max_contrast);
+    angle_info_data->shape_point.resize(devernay_features.size());
+    for (size_t m = 0; m < devernay_features.size(); ++m)
+    {
+        angle_info_data->shape_point[m].x =
+            devernay_features[m].x - static_cast<float>(image_data.cols) / 2.0f;
+        angle_info_data->shape_point[m].y =
+            devernay_features[m].y - static_cast<float>(image_data.rows) / 2.0f;
+        angle_info_data->shape_point[m].edge_dx = devernay_features[m].edge_dx;
+        angle_info_data->shape_point[m].edge_dy = devernay_features[m].edge_dy;
+    }
+    return;
+#endif
 
     std::vector<uint8_t> pBufOut(buffer_size);
     std::vector<int16_t> pBufGradX(buffer_size); //存取x方向偏导数dx
