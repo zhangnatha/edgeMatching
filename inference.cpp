@@ -27,37 +27,114 @@ bool number(int& i, int argc, const char* argv[], double& out) {
     return end && *end == '\0';
 }
 
-void drawStatusLabel(cv::Mat& image, const std::string& text)
+std::string matchDetail(size_t index, const T_T::MatchResult& result)
 {
-    if (image.empty() || text.empty()) return;
-    const int margin = std::max(2, static_cast<int>(std::round(
-        std::min(image.cols, image.rows) * 0.012)));
-    const int pad = std::max(2, static_cast<int>(std::round(
-        std::min(image.cols, image.rows) * 0.010)));
-    const int availableWidth = std::max(1, image.cols - 2 * margin - 2 * pad);
-    double fontScale = std::max(0.20, std::min(1.0,
-        std::min(image.cols, image.rows) / 850.0));
-    int thickness = std::max(1, static_cast<int>(std::round(fontScale * 1.8)));
+    const int templateId = result.template_id > 0 ? result.template_id : 0;
+    std::ostringstream detail;
+    detail << '#' << (index + 1)
+           << " T" << templateId
+           << std::fixed << std::setprecision(3)
+           << " S" << result.score
+           << std::setprecision(2)
+           << " M" << result.scale
+           << std::setprecision(1)
+           << " C" << result.pose.x << ',' << result.pose.y << ',' << result.pose.angle;
+    return detail.str();
+}
+
+void drawInfoPanel(cv::Mat& image, double elapsedMs,
+                   const std::vector<T_T::MatchResult>& results)
+{
+    if (image.empty()) return;
+
+    // Keep the panel legible on both small fixtures and large camera frames.
+    const int shortSide = std::max(1, std::min(image.cols, image.rows));
+    const int pad = std::max(10, static_cast<int>(std::round(shortSide * 0.025)));
+    const int lineGap = std::max(4, static_cast<int>(std::round(shortSide * 0.010)));
+    double fontScale = std::max(0.25, std::min(0.80, shortSide / 900.0));
+    const std::string timeLine = "Time: " + [&]() {
+        std::ostringstream ss;
+        ss << std::fixed << std::setprecision(3) << elapsedMs << " ms";
+        return ss.str();
+    }();
+    const std::string countLine = "Matches: " + std::to_string(results.size());
+    std::vector<std::string> details;
+    for (size_t index = 0; index < results.size(); ++index)
+        details.push_back(matchDetail(index, results[index]));
+
+    int thickness = 1;
     int baseline = 0;
-    cv::Size textSize;
-    while (fontScale > 0.10)
+    cv::Size sample;
+    int lineHeight = 0;
+    // Preserve the source image height. If many matches exist, details flow
+    // into additional columns in the left panel instead of extending the
+    // canvas downward or shrinking into unreadable text.
+    while (fontScale > 0.12)
     {
-        textSize = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX,
-                                   fontScale, thickness, &baseline);
-        if (textSize.width <= availableWidth) break;
-        fontScale *= 0.85;
-        thickness = std::max(1, static_cast<int>(std::round(fontScale * 1.8)));
+        thickness = std::max(1, static_cast<int>(std::round(fontScale * 1.7)));
+        sample = cv::getTextSize("Ag", cv::FONT_HERSHEY_SIMPLEX,
+                                 fontScale, thickness, &baseline);
+        lineHeight = sample.height + baseline + lineGap;
+        if (2 * pad + 3 * lineHeight <= image.rows) break;
+        fontScale *= 0.88;
     }
-    if (textSize.width > availableWidth) return;
-    const int boxWidth = textSize.width + 2 * pad;
-    const int boxHeight = textSize.height + baseline + 2 * pad;
-    if (boxWidth <= 0 || boxHeight <= 0 || boxWidth > image.cols - 2 * margin ||
-        boxHeight > image.rows - 2 * margin) return;
-    const cv::Rect box(margin, margin, boxWidth, boxHeight);
-    cv::rectangle(image, box, cv::Scalar(24, 24, 24), cv::FILLED, cv::LINE_AA);
-    const cv::Point origin(box.x + pad, box.y + pad + textSize.height);
-    cv::putText(image, text, origin, cv::FONT_HERSHEY_SIMPLEX,
-                fontScale, cv::Scalar(255, 255, 255), thickness, cv::LINE_AA);
+    const int detailTop = pad + 2 * lineHeight + lineGap;
+    const int rowsPerColumn = std::max(1, (image.rows - detailTop - pad) / lineHeight);
+    const int columnCount = details.empty() ? 0 :
+        (static_cast<int>(details.size()) + rowsPerColumn - 1) / rowsPerColumn;
+    const int columnGap = std::max(pad, lineGap * 2);
+    std::vector<int> columnWidths(columnCount, 0);
+    for (size_t index = 0; index < details.size(); ++index)
+    {
+        const int column = static_cast<int>(index) / rowsPerColumn;
+        columnWidths[column] = std::max(columnWidths[column],
+            cv::getTextSize(details[index], cv::FONT_HERSHEY_SIMPLEX,
+                            fontScale, thickness, &baseline).width);
+    }
+    int detailWidth = 0;
+    for (const int width : columnWidths) detailWidth += width;
+    if (columnCount > 1) detailWidth += (columnCount - 1) * columnGap;
+    const int headerWidth = std::max(
+        cv::getTextSize(timeLine, cv::FONT_HERSHEY_SIMPLEX,
+                        fontScale, thickness, &baseline).width,
+        cv::getTextSize(countLine, cv::FONT_HERSHEY_SIMPLEX,
+                        fontScale, thickness, &baseline).width);
+    const int panelWidth = std::max(150, 2 * pad + std::max(headerWidth, detailWidth));
+
+    cv::Mat expanded(image.rows, image.cols + panelWidth, image.type(),
+                     cv::Scalar(26, 31, 42));
+    image.copyTo(expanded(cv::Rect(panelWidth, 0, image.cols, image.rows)));
+    // A subtle divider keeps the panel visually separate without competing
+    // with the colored result frames in the image area.
+    cv::line(expanded, cv::Point(panelWidth, 0), cv::Point(panelWidth, image.rows - 1),
+             cv::Scalar(70, 78, 92), 1, cv::LINE_AA);
+
+    int y = pad + sample.height;
+    cv::putText(expanded, timeLine, cv::Point(pad, y), cv::FONT_HERSHEY_SIMPLEX,
+                fontScale, cv::Scalar(238, 242, 248), thickness, cv::LINE_AA);
+    y += lineHeight;
+    cv::putText(expanded, countLine, cv::Point(pad, y), cv::FONT_HERSHEY_SIMPLEX,
+                fontScale, cv::Scalar(238, 242, 248), thickness, cv::LINE_AA);
+    cv::line(expanded, cv::Point(pad, detailTop - lineGap),
+             cv::Point(panelWidth - pad, detailTop - lineGap),
+             cv::Scalar(70, 78, 92), 1, cv::LINE_AA);
+
+    int columnX = pad;
+    for (int column = 0; column < columnCount; ++column)
+    {
+        const int first = column * rowsPerColumn;
+        const int last = std::min(static_cast<int>(details.size()), first + rowsPerColumn);
+        int rowY = detailTop + sample.height;
+        for (int index = first; index < last; ++index)
+        {
+            cv::putText(expanded, details[index], cv::Point(columnX, rowY),
+                        cv::FONT_HERSHEY_SIMPLEX, fontScale,
+                        cv::Scalar(238, 242, 248), thickness, cv::LINE_AA);
+            rowY += lineHeight;
+        }
+        columnX += columnWidths[column] + columnGap;
+    }
+    image = expanded;
 }
 }
 
@@ -178,11 +255,7 @@ int main(int argc, const char* argv[]) {
     cv::Mat color;
     cv::cvtColor(image, color, cv::COLOR_GRAY2BGR);
     matcher.drawMatchResults(color, results, models);
-    std::ostringstream status;
-    status << std::fixed << std::setprecision(3)
-           << "Time: " << timer.get("Template matching")
-           << " ms  Matches: " << results.size();
-    drawStatusLabel(color, status.str());
+    drawInfoPanel(color, timer.get("Template matching"), results);
     if (!cv::imwrite(outputPath, color)) {
         std::cerr << "Failed to write result image: " << outputPath << '\n'; return 1;
     }

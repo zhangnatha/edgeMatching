@@ -2679,102 +2679,97 @@ cv::Scalar resultDrawingColor(const T_T::MatchResult& result, size_t index,
     return palette[hash % (sizeof(palette) / sizeof(palette[0]))];
 }
 
-void drawHorizontalLabel(cv::Mat& image, const cv::RotatedRect& frame,
-                         const std::string& text, const cv::Scalar& color,
-                         std::vector<cv::Rect>& occupiedLabels)
+void drawCompactRotatedLabel(cv::Mat& image, const cv::RotatedRect& frame,
+                             double objectAngle, const std::string& text,
+                             const cv::Scalar& color,
+                             std::vector<cv::Rect>& occupiedLabels)
 {
     if (image.empty() || text.empty()) return;
-    const int margin = std::max(2, static_cast<int>(std::round(
-        std::min(image.cols, image.rows) * 0.012)));
-    const int topSafeArea = std::max(margin, std::min(48,
-        static_cast<int>(std::round(std::min(image.cols, image.rows) * 0.08))));
-    const double scaleLimit = std::max(0.25, std::min(0.80,
-        std::min(image.cols, image.rows) / 1050.0));
-    double fontScale = scaleLimit;
+    const int margin = std::max(1, static_cast<int>(std::round(
+        std::min(image.cols, image.rows) * 0.008)));
+    double fontScale = std::max(0.22, std::min(0.75,
+        std::min(image.cols, image.rows) / 800.0));
     int thickness = std::max(1, static_cast<int>(std::round(fontScale * 1.7)));
     int baseline = 0;
     cv::Size textSize;
-    do
-    {
-        textSize = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX,
-                                   fontScale, thickness, &baseline);
-        if (textSize.width + 2 * margin <= image.cols - 2 * margin) break;
-        fontScale *= 0.85;
-        thickness = std::max(1, static_cast<int>(std::round(fontScale * 1.7)));
-    } while (fontScale > 0.20);
-
+    textSize = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX,
+                               fontScale, thickness, &baseline);
     const int pad = std::max(2, static_cast<int>(std::round(fontScale * 4.0)));
-    const int boxWidth = std::min(image.cols - 2 * margin,
-                                  textSize.width + 2 * pad);
-    const int boxHeight = textSize.height + baseline + 2 * pad;
-    if (boxWidth <= 0 || boxHeight <= 0 || boxHeight > image.rows - 2 * margin) return;
+    cv::Mat label(textSize.height + baseline + 2 * pad, textSize.width + 2 * pad,
+                  CV_8UC3, color);
+    cv::putText(label, text, cv::Point(pad, pad + textSize.height),
+                cv::FONT_HERSHEY_SIMPLEX, fontScale, cv::Scalar(0, 0, 0),
+                thickness + 2, cv::LINE_AA);
+    cv::putText(label, text, cv::Point(pad, pad + textSize.height),
+                cv::FONT_HERSHEY_SIMPLEX, fontScale, cv::Scalar(255, 255, 255),
+                thickness, cv::LINE_AA);
+    cv::Mat mask(label.size(), CV_8UC1, cv::Scalar(255));
 
-    float topY = frame.center.y;
-    float bottomY = frame.center.y;
     cv::Point2f vertices[4];
     frame.points(vertices);
-    for (const auto& vertex : vertices)
+    const double arrowAngle = -objectAngle * CV_PI / 180.0;
+    const double anchorAngle = arrowAngle + 135.0 * CV_PI / 180.0;
+    const cv::Point2f ray(static_cast<float>(std::cos(anchorAngle)),
+                          static_cast<float>(std::sin(anchorAngle)));
+    int corner = 0;
+    double bestProjection = -std::numeric_limits<double>::infinity();
+    for (int i = 0; i < 4; ++i)
     {
-        topY = std::min(topY, vertex.y);
-        bottomY = std::max(bottomY, vertex.y);
+        const cv::Point2f delta = vertices[i] - frame.center;
+        const double projection = delta.x * ray.x + delta.y * ray.y;
+        if (projection > bestProjection) { bestProjection = projection; corner = i; }
     }
-    const int gap = std::max(2, static_cast<int>(std::round(fontScale * 4.0)));
-    float leftX = frame.center.x;
-    float rightX = frame.center.x;
-    for (const auto& vertex : vertices)
-    {
-        leftX = std::min(leftX, vertex.x);
-        rightX = std::max(rightX, vertex.x);
-    }
-    const auto fittedBox = [&](int wantedX, int wantedY) {
-        const int x = std::max(margin, std::min(wantedX,
-            image.cols - margin - boxWidth));
-        const int y = std::max(topSafeArea, std::min(wantedY,
-            image.rows - margin - boxHeight));
-        return cv::Rect(x, y, boxWidth, boxHeight);
-    };
-    const int centerX = cvRound(frame.center.x - boxWidth * 0.5f);
-    const int top = cvRound(topY) - boxHeight - gap;
-    const int bottom = cvRound(bottomY) + gap;
-    const int middle = cvRound(frame.center.y - boxHeight * 0.5f);
-    std::vector<cv::Rect> candidates;
-    // Do not clamp an above/below label onto an image edge: that commonly
-    // collides with global status text or makes the label look detached.
-    if (top >= topSafeArea)
-    {
-        candidates.push_back(fittedBox(centerX, top));
-        candidates.push_back(fittedBox(cvRound(leftX), top));
-        candidates.push_back(fittedBox(cvRound(rightX) - boxWidth, top));
-    }
-    if (bottom + boxHeight <= image.rows - margin)
-        candidates.push_back(fittedBox(centerX, bottom));
-    candidates.push_back(fittedBox(cvRound(leftX) - boxWidth - gap, middle));
-    candidates.push_back(fittedBox(cvRound(rightX) + gap, middle));
-    candidates.push_back(fittedBox(centerX, cvRound(topY) + gap));
-    auto overlapArea = [&](const cv::Rect& candidate) {
-        int area = 0;
-        for (const auto& occupied : occupiedLabels)
-            area += (candidate & occupied).area();
-        return area;
-    };
-    cv::Rect box = candidates.front();
-    int bestOverlap = overlapArea(box);
-    for (size_t i = 1; i < candidates.size() && bestOverlap != 0; ++i)
-    {
-        const int overlap = overlapArea(candidates[i]);
-        if (overlap < bestOverlap)
-        {
-            box = candidates[i];
-            bestOverlap = overlap;
-        }
-    }
-    occupiedLabels.push_back(box);
-    cv::rectangle(image, box, color, cv::FILLED, cv::LINE_AA);
-    const cv::Point baselineOrigin(box.x + pad, box.y + pad + textSize.height);
-    cv::putText(image, text, baselineOrigin, cv::FONT_HERSHEY_SIMPLEX,
-                fontScale, cv::Scalar(0, 0, 0), thickness + 2, cv::LINE_AA);
-    cv::putText(image, text, baselineOrigin, cv::FONT_HERSHEY_SIMPLEX,
-                fontScale, cv::Scalar(255, 255, 255), thickness, cv::LINE_AA);
+    const int next = (corner + 1) % 4;
+    const int previous = (corner + 3) % 4;
+    const double nextLength = cv::norm(vertices[next] - vertices[corner]);
+    const int adjacent = nextLength >= cv::norm(vertices[previous] - vertices[corner])
+        ? next : previous;
+    cv::Point2f edgeDirection = vertices[adjacent] - vertices[corner];
+    const double edgeLength = cv::norm(edgeDirection);
+    if (edgeLength < 1.0) return;
+    edgeDirection *= static_cast<float>(1.0 / edgeLength);
+    cv::Point2f textDirection = edgeDirection;
+    if (textDirection.x < 0.0f) textDirection = -textDirection;
+    cv::Point2f outward(-edgeDirection.y, edgeDirection.x);
+    if (outward.dot(vertices[corner] - frame.center) < 0.0f) outward = -outward;
+
+    const cv::Point2f labelCenter(label.cols * 0.5f, label.rows * 0.5f);
+    const double rotationAngle = -std::atan2(static_cast<double>(textDirection.y), textDirection.x) *
+                                 180.0 / CV_PI;
+    cv::Mat rotation = cv::getRotationMatrix2D(labelCenter, rotationAngle, 1.0);
+    const cv::Rect2f bounds = cv::RotatedRect(labelCenter, label.size(),
+                                               rotationAngle).boundingRect2f();
+    rotation.at<double>(0, 2) += bounds.width * 0.5 - labelCenter.x;
+    rotation.at<double>(1, 2) += bounds.height * 0.5 - labelCenter.y;
+    cv::Mat rotatedLabel, rotatedMask;
+    cv::warpAffine(label, rotatedLabel, rotation, bounds.size(), cv::INTER_LINEAR,
+                   cv::BORDER_CONSTANT, color);
+    cv::warpAffine(mask, rotatedMask, rotation, bounds.size(), cv::INTER_NEAREST,
+                   cv::BORDER_CONSTANT, cv::Scalar(0));
+
+    const int gap = std::max(1, static_cast<int>(std::round(fontScale * 2.0)));
+    // The label's near short edge touches the selected frame corner, extends
+    // along the adjacent long edge, and sits just outside the frame.
+    const cv::Point2f anchor = vertices[corner] +
+        edgeDirection * static_cast<float>(0.5 * label.cols) +
+        outward * static_cast<float>(0.5 * label.rows + gap);
+    cv::Rect target(cvRound(anchor.x - rotatedLabel.cols * 0.5f),
+                    cvRound(anchor.y - rotatedLabel.rows * 0.5f),
+                    rotatedLabel.cols, rotatedLabel.rows);
+    // Shift the complete label into the image where possible.  The final
+    // intersection still guards against frames extending beyond the image.
+    if (target.x < margin) target.x = margin;
+    if (target.y < margin) target.y = margin;
+    if (target.x + target.width > image.cols - margin)
+        target.x = std::max(margin, image.cols - margin - target.width);
+    if (target.y + target.height > image.rows - margin)
+        target.y = std::max(margin, image.rows - margin - target.height);
+    const cv::Rect clipped = target & cv::Rect(0, 0, image.cols, image.rows);
+    if (clipped.empty()) return;
+    const cv::Rect source(clipped.x - target.x, clipped.y - target.y,
+                          clipped.width, clipped.height);
+    rotatedLabel(source).copyTo(image(clipped), rotatedMask(source));
+    occupiedLabels.push_back(target);
 }
 }
 
@@ -2869,13 +2864,10 @@ void SearchTemplate::_drawMatchResultsImpl(cv::Mat& image, const cv::Mat& gradie
             cv::circle(image, arrowStart, 3, color, cv::FILLED, cv::LINE_AA);
             cv::arrowedLine(image, arrowStart, arrowEnd, color, 2, cv::LINE_AA, 0, 0.22);
         }
-        char label[256];
-        const int labelTemplateId = result.template_id > 0
-            ? result.template_id : model->template_cfg.id;
-        std::snprintf(label, sizeof(label), "#%zu T%d S%.3f M%.2f C%.1f,%.1f,%.1f",
-                      index + 1, labelTemplateId, result.score, result.scale,
-                      result.pose.x, result.pose.y, result.pose.angle);
-        drawHorizontalLabel(image, frame, label, color, occupiedLabels);
+        char label[32];
+        std::snprintf(label, sizeof(label), "#%zu", index + 1);
+        drawCompactRotatedLabel(image, frame, result.pose.angle, label, color,
+                                occupiedLabels);
     }
 }
 
