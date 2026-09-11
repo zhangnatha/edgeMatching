@@ -15,6 +15,9 @@ using namespace SM_V1;
 #ifndef SHAPE_MATCH_VISUALIZE_FINE
 #define SHAPE_MATCH_VISUALIZE_FINE 0
 #endif
+#ifndef SHAPE_MATCH_ENABLE_SUBPIXEL
+#define SHAPE_MATCH_ENABLE_SUBPIXEL 0
+#endif
 #define COSTTIME_SHOW 1 // 耗时统计，用于算法优化观测
 
 namespace
@@ -1263,10 +1266,12 @@ bool SearchTemplate::searchTemplate(
 
 namespace
 {
+#if SHAPE_MATCH_ENABLE_SUBPIXEL
 void refineSubpixelPosition(T_T::MatchResult& result, const T_T::ShapeInfo::Ptr& shapeInfo,
                             const cv::Mat& image, const cv::Mat& mask,
                             double minVisibleRatio, int minContrast, I_I::Metric metric,
                             double angleStep, double angleStart, double angleEnd);
+#endif
 }
 
 // 单尺度匹配内核，由公开重载统一调用。
@@ -1572,6 +1577,7 @@ bool SearchTemplate::_searchTemplateSingleScale(
         // Refine only candidates that survived NMS. Performing six bilinear score
         // evaluations for every coarse candidate would erase the benefit of the
         // integer/SIMD search path.
+#if SHAPE_MATCH_ENABLE_SUBPIXEL
         if (subpixel_refine_)
         for (auto& candidate : findResult)
         {
@@ -1585,6 +1591,7 @@ bool SearchTemplate::_searchTemplateSingleScale(
             candidate.pose.x -= left;
             candidate.pose.y -= top;
         }
+#endif
 
         //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
         //+++++++++++++++++++++++++待测图像目标点排序筛选剔除+++++++++++++++++++++++++++++
@@ -1704,6 +1711,7 @@ bool validScaleCfg(const T_T::ScaleSearchCfg& cfg)
             cfg.metric == I_I::IGNORE_GLOBAL_POLARITY);
 }
 
+#if SHAPE_MATCH_ENABLE_SUBPIXEL
 bool bilinearNormalizedGradient(const cv::Mat& image, double x, double y,
                                 float& gradientX, float& gradientY, float& rawMagnitude,
                                 int minContrast)
@@ -1862,6 +1870,7 @@ void refineSubpixelPosition(T_T::MatchResult& result, const T_T::ShapeInfo::Ptr&
     }
     else result = original;
 }
+#endif
 }
 
 bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image,
@@ -1928,7 +1937,12 @@ bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi
     const I_I::Metric oldMetric = metric_;
     const bool oldVariableVisibility = variable_visibility_;
     min_visible_ratio_ = scale_cfg.min_visible_ratio;
-    subpixel_refine_ = scale_cfg.subpixel_refine;
+    subpixel_refine_ =
+#if SHAPE_MATCH_ENABLE_SUBPIXEL
+        scale_cfg.subpixel_refine;
+#else
+        false;
+#endif
     search_min_contrast_ = scale_cfg.min_contrast;
     metric_ = static_cast<I_I::Metric>(scale_cfg.metric);
     variable_visibility_ = scale_cfg.min_visible_ratio < 1.0 || !s_mask_image.empty();
@@ -2012,6 +2026,7 @@ bool SearchTemplate::_searchTemplatePrepared(
     // HALCON-style interpolation in the scale dimension. The expensive image
     // searches remain discrete; only NMS survivors are associated with the same
     // spatial peak at the immediately adjacent scales and fitted quadratically.
+#if SHAPE_MATCH_ENABLE_SUBPIXEL
     if (scale_cfg.subpixel_refine &&
         scale_cfg.scale_max - scale_cfg.scale_min >= 2.0 * scale_cfg.scale_step - epsilon)
     {
@@ -2054,6 +2069,7 @@ bool SearchTemplate::_searchTemplatePrepared(
                 scale_cfg.scale_max, candidate.scale + delta * scale_cfg.scale_step));
         }
     }
+#endif
     if (num_matches >= 0 && kept.size() > static_cast<size_t>(num_matches))
         kept.resize(num_matches);
     std::vector<T_T::MatchResult> keptResults;
@@ -2111,7 +2127,12 @@ bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi
     const I_I::Metric oldMetric = metric_;
     const bool oldVariableVisibility = variable_visibility_;
     min_visible_ratio_ = scale_cfg.min_visible_ratio;
-    subpixel_refine_ = scale_cfg.subpixel_refine;
+    subpixel_refine_ =
+#if SHAPE_MATCH_ENABLE_SUBPIXEL
+        scale_cfg.subpixel_refine;
+#else
+        false;
+#endif
     search_min_contrast_ = scale_cfg.min_contrast;
     metric_ = static_cast<I_I::Metric>(scale_cfg.metric);
     variable_visibility_ = scale_cfg.min_visible_ratio < 1.0 || !s_mask_image.empty();

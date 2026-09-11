@@ -4,6 +4,10 @@
 #include <fstream>
 #include <cmath>
 
+#ifndef SHAPE_MATCH_ENABLE_SUBPIXEL
+#define SHAPE_MATCH_ENABLE_SUBPIXEL 0
+#endif
+
 using namespace SM_V1;
 
 CreateTemplate::CreateTemplate() = default;
@@ -296,11 +300,12 @@ void CreateTemplate::_extractShapeInfo(
                 if (fdx != 0 || fdy != 0)
                 {
                     float magnitude = (!(std::fabs(magnitude_origin) < 1e-6)) ? (1 / magnitude_origin) : 0;
+#if SHAPE_MATCH_ENABLE_SUBPIXEL
+                    const float nx = fdx * magnitude;
+                    const float ny = fdy * magnitude;
                     // Localize the edge maximum along its gradient normal with a
                     // three-sample quadratic fit. The bounded offset keeps noisy
                     // or flat profiles from moving a feature into another pixel.
-                    const float nx = fdx * magnitude;
-                    const float ny = fdy * magnitude;
                     const auto sampleMagnitude = [&](double x, double y) {
                         const int x0 = std::max(0, std::min(width - 2,
                             static_cast<int>(std::floor(x))));
@@ -323,6 +328,9 @@ void CreateTemplate::_extractShapeInfo(
                         offset = std::max(-0.5f, std::min(0.5f,
                             0.5f * (before - after) / denominator));
                     TF0degree.push_back({i + offset * nx, j + offset * ny,
+#else
+                    TF0degree.push_back({static_cast<double>(i), static_cast<double>(j),
+#endif
                                          (float)fdx, (float)fdy, magnitude});
                 }
             }

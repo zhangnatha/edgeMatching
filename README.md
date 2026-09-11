@@ -131,6 +131,16 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
 cmake --build build --parallel
 ```
 
+亚像素精修由编译选项 `SHAPE_MATCH_ENABLE_SUBPIXEL` 控制，默认 `OFF`，可在构建时按需开启：
+
+```bash
+cmake -S . -B build-subpixel -DSHAPE_MATCH_ENABLE_SUBPIXEL=ON -DBUILD_TESTING=ON
+cmake --build build-subpixel --parallel
+```
+
+关闭时，库会忽略 `ScaleSearchCfg::subpixel_refine=true` 并保持离散匹配行为；命令行
+`--subpixel` 会明确拒绝并提示使用上述选项重新编译。开启后才编译亚像素位置、角度和尺度精修代码。
+
 ## 程序使用
 
 训练程序示例：
@@ -420,7 +430,8 @@ JSON 模型只保存 canonical 特征。加载 JSON 或二进制模型时，匹�
 
 `--metric use-polarity` 使用有符号梯度方向；`ignore-global-polarity` 允许整个候选统一反色；`ignore-local-polarity` 则逐点忽略极性。后两者适合亮暗关系会变化的目标，但约束依次更宽松。
 
-使用 `--subpixel` 后，NMS 仅对最终候选执行亚像素 `x/y/angle/scale` 精修：先在相邻角度得分上做抛物线拟合，再在精修角度下优化位置并联合复评；多尺度搜索还会对相邻三个尺度的同一空间峰做二次插值。内部目标下降时回退离散姿态。对外 `score` 保留离散匹配得分，不与内部双线性目标混用。精修每次最多均匀采样 512 个模板特征，输出比例是该固定采样集上的估计值。默认关闭。
+编译时开启 `SHAPE_MATCH_ENABLE_SUBPIXEL=ON` 后，`--subpixel` 或
+`ScaleSearchCfg::subpixel_refine=true` 才会在 NMS 后执行亚像素 `x/y/angle/scale` 精修：先在相邻角度得分上做抛物线拟合，再在精修角度下优化位置并联合复评；多尺度搜索还会对相邻三个尺度的同一空间峰做二次插值。内部目标下降时回退离散姿态。对外 `score` 保留离散匹配得分，不与内部双线性目标混用。精修每次最多均匀采样 512 个模板特征。默认未编译、未启用。
 
 例如，对 `src8.bmp` 输出亚像素位置：
 

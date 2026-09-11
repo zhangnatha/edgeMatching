@@ -11,6 +11,10 @@
 #include <vector>
 #include <set>
 
+#ifndef SHAPE_MATCH_ENABLE_SUBPIXEL
+#define SHAPE_MATCH_ENABLE_SUBPIXEL 0
+#endif
+
 namespace {
 std::string getCpuInfo()
 {
@@ -356,7 +360,12 @@ int main(int argc, const char* argv[]) {
             else if (value == "ignore-global-polarity") scaleCfg.metric = I_I::IGNORE_GLOBAL_POLARITY;
             else { std::cerr << "Invalid --metric value: " << value << '\n'; return 2; }
         } else if (arg == "--subpixel") {
+#if SHAPE_MATCH_ENABLE_SUBPIXEL
             scaleCfg.subpixel_refine = true;
+#else
+            std::cerr << "--subpixel is unavailable: rebuild with -DSHAPE_MATCH_ENABLE_SUBPIXEL=ON.\n";
+            return 2;
+#endif
         } else if (arg == "--output") {
             if (++i >= argc) { usage(argv[0]); return 2; }
             outputPath = argv[i];

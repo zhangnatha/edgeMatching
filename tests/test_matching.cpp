@@ -11,6 +11,10 @@
 #include <iostream>
 #include <vector>
 
+#ifndef SHAPE_MATCH_ENABLE_SUBPIXEL
+#define SHAPE_MATCH_ENABLE_SUBPIXEL 0
+#endif
+
 namespace {
 cv::Mat makePattern(bool alternate) {
     cv::Mat image(64, 80, CV_8UC1, cv::Scalar(20));
@@ -113,7 +117,11 @@ int main() {
     auto modelB = train(patternB, 202);
     if (!modelA || !modelB) return 1;
     if (modelA->template_cfg.id != 101 || modelB->template_cfg.id != 202) return 2;
+#if SHAPE_MATCH_ENABLE_SUBPIXEL
     if (!hasFractionalFeature(modelA) || !hasFractionalFeature(modelB)) return 14;
+#else
+    if (hasFractionalFeature(modelA) || hasFractionalFeature(modelB)) return 41;
+#endif
     if (modelA->templates.size() != 1 || modelA->templates[0]->shape_angle.size() != 1) return 2;
 
     // Exercise the hybrid NMS policy directly.  The synthetic model has two
@@ -292,6 +300,10 @@ int main() {
                                 T_T::ScaleSearchCfg(0.8, 1.2, 0.1, 1.0), crossScaleResults) ||
         crossScaleResults.size() != 1 || !nearResult(crossScaleResults, 101, 1.0, 145, 90, 8.0)) return 4;
 
+    // Subpixel-only scale, position, and angle assertions are compiled in and
+    // exercised only by the feature-enabled build.  The disabled build still
+    // verifies that requesting the API flag has deterministic legacy behavior.
+#if SHAPE_MATCH_ENABLE_SUBPIXEL
     const double targetScale = 1.03;
     const cv::Mat scaledScene = sceneWith(patternA, targetScale, 145, 90);
     std::vector<T_T::MatchResult> discreteScaleResults, refinedScaleResults;
@@ -362,6 +374,23 @@ int main() {
         std::abs(refinedAngleResults[0].pose.angle -
                  std::round(refinedAngleResults[0].pose.angle)) < 0.02 ||
         refinedAngleResults[0].score + 1e-6 < discreteAngleResults[0].score) return 29;
+#else
+    std::vector<T_T::MatchResult> disabledLegacyResults, disabledRequestedResults;
+    const T_T::ScaleSearchCfg disabledCfg(1.0, 1.0, 1.0, 1.0, true);
+    if (!matcher.searchTemplate(compatibilityScene, cv::Mat(), modelA, 0, 0, 0.30f, 1,
+                                0.4f, 0, 0.8f, true,
+                                T_T::ScaleSearchCfg(1.0, 1.0, 1.0, 1.0, false),
+                                disabledLegacyResults) ||
+        !matcher.searchTemplate(compatibilityScene, cv::Mat(), modelA, 0, 0, 0.30f, 1,
+                                0.4f, 0, 0.8f, true, disabledCfg,
+                                disabledRequestedResults) ||
+        disabledLegacyResults.size() != disabledRequestedResults.size() ||
+        disabledLegacyResults.empty() ||
+        disabledLegacyResults[0].pose.x != disabledRequestedResults[0].pose.x ||
+        disabledLegacyResults[0].pose.y != disabledRequestedResults[0].pose.y ||
+        disabledLegacyResults[0].pose.angle != disabledRequestedResults[0].pose.angle ||
+        disabledLegacyResults[0].scale != disabledRequestedResults[0].scale) return 33;
+#endif
 
     const cv::Mat partial = sceneWith(patternA, 1.0, 285, 90);
     std::vector<T_T::MatchResult> partialResults;

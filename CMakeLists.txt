@@ -5,6 +5,7 @@ include(CTest)
 
 option(SHAPE_MATCH_VISUALIZE_COARSE "Show coarse matching candidates while inference runs" OFF)
 option(SHAPE_MATCH_VISUALIZE_FINE "Show each coarse-to-fine refinement step" OFF)
+option(SHAPE_MATCH_ENABLE_SUBPIXEL "Enable subpixel feature refinement and matching" OFF)
 
 # --- C++ 标准 ---
 set(CMAKE_CXX_STANDARD 11)
@@ -26,10 +27,14 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -march=native -fopenmp -msse 
 # --- 输出构建信息 ---
 message(STATUS "Project: ${PROJECT_NAME}")
 message(STATUS "OpenCV_LIBRARIES = ${OpenCV_LIBRARIES}")
+message(STATUS "SHAPE_MATCH_ENABLE_SUBPIXEL = ${SHAPE_MATCH_ENABLE_SUBPIXEL}")
 
 # --- 构建共享库 ---
 add_library(MakeTemplate SHARED
     src/MakeTemplateV1.cpp
+)
+target_compile_definitions(MakeTemplate PUBLIC
+    SHAPE_MATCH_ENABLE_SUBPIXEL=$<BOOL:${SHAPE_MATCH_ENABLE_SUBPIXEL}>
 )
 target_link_libraries(MakeTemplate ${OpenCV_LIBRARIES})
 
@@ -39,6 +44,9 @@ add_library(FindTemplate SHARED
 target_compile_definitions(FindTemplate PRIVATE
     SHAPE_MATCH_VISUALIZE_COARSE=$<BOOL:${SHAPE_MATCH_VISUALIZE_COARSE}>
     SHAPE_MATCH_VISUALIZE_FINE=$<BOOL:${SHAPE_MATCH_VISUALIZE_FINE}>
+)
+target_compile_definitions(FindTemplate PUBLIC
+    SHAPE_MATCH_ENABLE_SUBPIXEL=$<BOOL:${SHAPE_MATCH_ENABLE_SUBPIXEL}>
 )
 target_link_libraries(FindTemplate ${OpenCV_LIBRARIES})
 
@@ -68,6 +76,10 @@ if(BUILD_TESTING)
     set_tests_properties(cli_reject_negative_contrast cli_reject_large_contrast
                          cli_reject_fractional_contrast cli_reject_missing_contrast
                          cli_reject_bad_metric PROPERTIES WILL_FAIL TRUE)
+    if(NOT SHAPE_MATCH_ENABLE_SUBPIXEL)
+        add_test(NAME cli_reject_subpixel_when_disabled COMMAND inference --subpixel)
+        set_tests_properties(cli_reject_subpixel_when_disabled PROPERTIES WILL_FAIL TRUE)
+    endif()
 endif()
 
 # --- 安装库 ---
