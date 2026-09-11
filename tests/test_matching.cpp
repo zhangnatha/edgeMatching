@@ -146,6 +146,20 @@ int main() {
         nmsResult(100.0, 0.80), nmsResult(130.0, 0.79)};
     if (nmsMatcher._filterMaxOverLapCandidates(lowBoxDuplicate, 0.4f,
                                                nmsModel, true).size() != 1) return 36;
+    const std::vector<T_T::MatchResult> highNearCenterDuplicate{
+        nmsResult(100.0, 0.95),
+        T_T::MatchResult(T_T::Pose2d(103.0, 90.0, 180.0), 0.94, 1.0, 303)};
+    if (nmsMatcher._filterMaxOverLapCandidates(highNearCenterDuplicate, 0.4f,
+                                               nmsModel, true).size() != 1) return 39;
+    const std::vector<T_T::MatchResult> coarseAngleModes{
+        nmsResult(100.0, 0.95),
+        T_T::MatchResult(T_T::Pose2d(101.0, 91.0, 5.0), 0.94, 1.0, 303),
+        T_T::MatchResult(T_T::Pose2d(100.0, 90.0, 180.0), 0.93, 1.0, 303),
+        T_T::MatchResult(T_T::Pose2d(101.0, 91.0, 175.0), 0.92, 1.0, 303)};
+    const auto retainedAngleModes = nmsMatcher._filterNearCandidates(coarseAngleModes);
+    if (retainedAngleModes.size() != 2 ||
+        std::abs(retainedAngleModes[0].pose.angle) > 1e-9 ||
+        std::abs(retainedAngleModes[1].pose.angle - 180.0) > 1e-9) return 40;
 
     auto defaultModel = std::make_shared<T_T::Template>();
     cv::Mat defaultMask(patternA.size(), CV_8UC1, cv::Scalar(255));

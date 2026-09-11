@@ -2,6 +2,7 @@
 #include "MakeTemplateV1.h"
 #include <opencv2/opencv.hpp>
 #include <cstdio>
+#include <cmath>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -53,16 +54,49 @@ int main()
                                            -180, 180, 0.90f, 200,
                                            0.5f, -1, 0.9f, true,
                                            cfg, results);
-    for (const auto& path : modelPaths) std::remove(path.c_str());
-
-    // src9_2 has seven high-quality candidates at this threshold after the
-    // intermediate pyramid gate is relaxed. Before the fix, two of those
-    // proposals were discarded before reaching L0 and only five remained.
-    if (!ok || results.size() < 7)
+    // src9_2 has eight true instances at 0.90 once the correct angular modes
+    // survive coarse-to-fine propagation.  Before the intermediate gate fix,
+    // two proposals were discarded before L0; before angle-mode retention, a
+    // false T11 pose displaced the occluded T9 instance.
+    if (!ok || results.size() != 8)
     {
         std::cerr << "intermediate threshold regression: got "
-                  << results.size() << " results, expected at least 7\n";
+                  << results.size() << " results, expected 8\n";
         return 5;
     }
+
+    const auto angleDistance = [](double lhs, double rhs) {
+        double distance = std::fmod(std::abs(lhs - rhs), 360.0);
+        return distance > 180.0 ? 360.0 - distance : distance;
+    };
+    const auto hasPose = [&](const std::vector<T_T::MatchResult>& found, int id,
+                             double x, double y, double angle) {
+        for (const auto& result : found)
+            if (result.template_id == id && std::hypot(result.pose.x - x, result.pose.y - y) <= 6.0 &&
+                angleDistance(result.pose.angle, angle) <= 5.0) return true;
+        return false;
+    };
+    if (!hasPose(results, 9, 325, 315, 134)) return 6;
+
+    const auto searchScene = [&](const std::string& filename, float score,
+                                 std::vector<T_T::MatchResult>& found) {
+        const cv::Mat input = cv::imread(root + "/" + filename, cv::IMREAD_GRAYSCALE);
+        found.clear();
+        return !input.empty() && matcher.searchTemplate(input, cv::Mat(), models,
+            -180, 180, score, 200, 0.5f, -1, 0.9f, true, cfg, found);
+    };
+
+    if (!searchScene("src9_3.png", 0.90f, results) || results.size() != 5) return 7;
+    if (!searchScene("src9_4.png", 0.89f, results) || results.size() != 4 ||
+        !hasPose(results, 9, 263, 160, 103) ||
+        !hasPose(results, 10, 214, 242, 177) ||
+        !hasPose(results, 11, 327, 216, -35) ||
+        !hasPose(results, 9, 278, 310, -59)) return 8;
+    if (!searchScene("src9_5.png", 0.90f, results) || results.size() != 3 ||
+        !hasPose(results, 9, 359, 209, 136) ||
+        !hasPose(results, 9, 213, 263, -133) ||
+        !hasPose(results, 9, 362, 308, -44)) return 9;
+
+    for (const auto& path : modelPaths) std::remove(path.c_str());
     return 0;
 }

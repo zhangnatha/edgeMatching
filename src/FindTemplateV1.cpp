@@ -235,22 +235,25 @@ std::vector<T_T::MatchResult> SearchTemplate::_filterNearCandidates(const std::v
         return lhs.score > rhs.score;
     });
     std::vector<T_T::MatchResult> result;
-    bool nearFlag = false;
     for (const auto& c : candidates)
     {
-        //遍历所有已记录的结果
-        nearFlag = false;
-        for (auto& r : result)
+        // At one coarse spatial peak retain the strongest orientation and, at
+        // most, its strongest substantially different orientation.  The
+        // second hypothesis is needed for occluded 180-degree ambiguities;
+        // bounding it to two avoids multiplying the fine-search cost.
+        int nearbyModes = 0;
+        bool sameAngularMode = false;
+        for (const auto& r : result)
         {
-            //遍历所有已选择的结果
             if (std::abs(r.pose.x - c.pose.x) < 5 && std::abs(r.pose.y - c.pose.y) < 5)
             {
-                //当结果位置相近时，竞选出一个结果保存
-                nearFlag = true;
-                break;
+                ++nearbyModes;
+                if (angleDistance(r.pose.angle, c.pose.angle) < 90.0)
+                    sameAngularMode = true;
             }
         }
-        if (!nearFlag) { result.push_back(c); }
+        if (nearbyModes == 0 || (nearbyModes == 1 && !sameAngularMode))
+            result.push_back(c);
     }
     //按照得分从高到低进行排序
     std::sort(result.begin(), result.end(), [](const T_T::MatchResult& c1, const T_T::MatchResult& c2)
@@ -281,13 +284,18 @@ std::vector<T_T::MatchResult> SearchTemplate::_filterMaxOverLapCandidates(
         CandidateSupport current{c, buildSupportPixels(c, model, pose_angle_is_output)};
         for (auto& r : result)
         {
+            // Distinct angle hypotheses may intentionally survive the coarse
+            // pyramid.  Once refined at L0, peaks with effectively the same
+            // center are duplicate reports of one physical instance.
+            const bool sameCenter = std::hypot(current.result.pose.x - r.result.pose.x,
+                                               current.result.pose.y - r.result.pose.y) <= 5.0;
             const bool supportOverlap = !current.support.empty() && !r.support.empty() &&
                 supportIoU(current.support, r.support) > max_ovelap;
             const bool highConfidence = std::min(current.result.score, r.result.score) >= 0.90;
             const bool boxOverlap = !highConfidence &&
                 _maxOverlap(legacyBoxForResult(current.result, model, pose_angle_is_output),
                             legacyBoxForResult(r.result, model, pose_angle_is_output), max_ovelap);
-            if (supportOverlap || boxOverlap)
+            if (sameCenter || supportOverlap || boxOverlap)
             {
                 //当结果位置相近时，竞选出一个结果保存
                 overlapFlag = true;
@@ -1158,9 +1166,13 @@ bool SearchTemplate::_coarse2FineMatching(
     SearchRegion.start_Y = std::max(0, predicted_y - refinement_radius);
     SearchRegion.end_X = std::min(cropImgW, predicted_x + refinement_radius + 1);
     SearchRegion.end_Y = std::min(cropImgH, predicted_y + refinement_radius + 1);
-    // 搜索角度根据上层匹配角度逆时针、顺时针各偏移4度
-    SearchRegion.start_angle = (MatchAngle - 4);
-    SearchRegion.stop_angle = (MatchAngle + 4);
+    // Cover the angular sampling step of the immediately coarser level plus
+    // one two-degree bin for coarse-image quantisation.  A fixed +/-4 window
+    // can strand a valid hypothesis at the boundary when refining from level 3.
+    const double angle_refinement_radius = std::max(
+        model_id->template_cfg.angle_step, 2.0 * (py_levels + 2));
+    SearchRegion.start_angle = MatchAngle - angle_refinement_radius;
+    SearchRegion.stop_angle = MatchAngle + angle_refinement_radius;
 
     if (pInfoPy == nullptr) return false;
 
