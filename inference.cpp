@@ -205,6 +205,108 @@ void drawInfoPanel(cv::Mat& image, double elapsedMs,
     }
     image = expanded;
 }
+
+std::string getJsonPathFromImagePath(const std::string& imagePath)
+{
+    const size_t dot = imagePath.find_last_of('.');
+    const size_t slash = imagePath.find_last_of("/\\");
+    if (dot != std::string::npos && (slash == std::string::npos || dot > slash))
+    {
+        return imagePath.substr(0, dot) + ".json";
+    }
+    return imagePath + ".json";
+}
+
+bool saveResultsToJson(const std::string& jsonPath,
+                       const std::string& imagePath,
+                       int imageWidth, int imageHeight,
+                       const T_T::ScaleSearchCfg& scaleCfg,
+                       double angleStart, double angleEnd,
+                       double minScore, double maxOverlap,
+                       double elapsedMs,
+                       const std::string& cpuInfo,
+                       const std::vector<T_T::MatchResult>& results)
+{
+    std::ofstream out(jsonPath);
+    if (!out.is_open())
+    {
+        std::cerr << "Failed to open output json file: " << jsonPath << '\n';
+        return false;
+    }
+
+    auto escapeJson = [](const std::string& s) {
+        std::ostringstream ss;
+        for (char c : s)
+        {
+            if (c == '"') ss << "\\\"";
+            else if (c == '\\') ss << "\\\\";
+            else if (c == '\b') ss << "\\b";
+            else if (c == '\f') ss << "\\f";
+            else if (c == '\n') ss << "\\n";
+            else if (c == '\r') ss << "\\r";
+            else if (c == '\t') ss << "\\t";
+            else ss << c;
+        }
+        return ss.str();
+    };
+
+    std::string metricStr = "use-polarity";
+    if (scaleCfg.metric == I_I::IGNORE_LOCAL_POLARITY) metricStr = "ignore-local-polarity";
+    else if (scaleCfg.metric == I_I::IGNORE_GLOBAL_POLARITY) metricStr = "ignore-global-polarity";
+
+    out << "{\n";
+    out << "  \"image\": {\n";
+    out << "    \"path\": \"" << escapeJson(imagePath) << "\",\n";
+    out << "    \"width\": " << imageWidth << ",\n";
+    out << "    \"height\": " << imageHeight << "\n";
+    out << "  },\n";
+
+    out << "  \"search_config\": {\n";
+    out << "    \"scale_min\": " << std::fixed << std::setprecision(4) << scaleCfg.scale_min << ",\n";
+    out << "    \"scale_max\": " << std::fixed << std::setprecision(4) << scaleCfg.scale_max << ",\n";
+    out << "    \"scale_step\": " << std::fixed << std::setprecision(4) << scaleCfg.scale_step << ",\n";
+    out << "    \"angle_start\": " << std::fixed << std::setprecision(2) << angleStart << ",\n";
+    out << "    \"angle_end\": " << std::fixed << std::setprecision(2) << angleEnd << ",\n";
+    out << "    \"min_score\": " << std::fixed << std::setprecision(4) << minScore << ",\n";
+    out << "    \"max_overlap\": " << std::fixed << std::setprecision(4) << maxOverlap << ",\n";
+    out << "    \"min_visible_ratio\": " << std::fixed << std::setprecision(4) << scaleCfg.min_visible_ratio << ",\n";
+    out << "    \"min_contrast\": " << scaleCfg.min_contrast << ",\n";
+    out << "    \"metric\": \"" << metricStr << "\",\n";
+    out << "    \"subpixel_refine\": " << (scaleCfg.subpixel_refine ? "true" : "false") << "\n";
+    out << "  },\n";
+
+    out << "  \"performance\": {\n";
+    out << "    \"cpu\": \"" << escapeJson(cpuInfo) << "\",\n";
+    out << "    \"cost_time_ms\": " << std::fixed << std::setprecision(3) << elapsedMs << "\n";
+    out << "  },\n";
+
+    out << "  \"summary\": {\n";
+    out << "    \"total_matches\": " << results.size() << "\n";
+    out << "  },\n";
+
+    out << "  \"results\": [\n";
+    for (size_t n = 0; n < results.size(); ++n)
+    {
+        const auto& r = results[n];
+        out << "    {\n";
+        out << "      \"index\": " << (n + 1) << ",\n";
+        out << "      \"template_id\": " << r.template_id << ",\n";
+        out << "      \"score\": " << std::fixed << std::setprecision(6) << r.score << ",\n";
+        out << "      \"scale\": " << std::fixed << std::setprecision(4) << r.scale << ",\n";
+        out << "      \"pose\": {\n";
+        out << "        \"x\": " << std::fixed << std::setprecision(6) << r.pose.x << ",\n";
+        out << "        \"y\": " << std::fixed << std::setprecision(6) << r.pose.y << ",\n";
+        out << "        \"angle\": " << std::fixed << std::setprecision(6) << r.pose.angle << "\n";
+        out << "      },\n";
+        out << "      \"visible_ratio\": " << std::fixed << std::setprecision(6) << r.visible_ratio << ",\n";
+        out << "      \"matched_ratio\": " << std::fixed << std::setprecision(6) << r.matched_ratio << "\n";
+        out << "    }" << (n + 1 < results.size() ? "," : "") << "\n";
+    }
+    out << "  ]\n";
+    out << "}\n";
+
+    return true;
+}
 }
 
 int main(int argc, const char* argv[]) {
@@ -329,6 +431,15 @@ int main(int argc, const char* argv[]) {
         std::cerr << "Failed to write result image: " << outputPath << '\n'; return 1;
     }
     std::cout << "Result image: " << outputPath << '\n';
+
+    const std::string jsonPath = getJsonPathFromImagePath(outputPath);
+    if (!saveResultsToJson(jsonPath, imagePath, image.cols, image.rows,
+                           scaleCfg, angleStart, angleEnd, minScore, maxOverlap,
+                           timer.get("Template matching"), getCpuInfo(), results)) {
+        std::cerr << "Failed to write result json: " << jsonPath << '\n'; return 1;
+    }
+    std::cout << "Result json: " << jsonPath << '\n';
+
     timer.report();
     return 0;
 }
