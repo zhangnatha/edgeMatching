@@ -187,7 +187,8 @@ namespace SM_V1
         void _drawMatchResultsImpl(cv::Mat& image, const cv::Mat& gradient_x,
                                    const cv::Mat& gradient_y,
                                    const std::vector<T_T::MatchResult>& results,
-                                   const T_T::Template::Ptr& model);
+                                   const T_T::Template::Ptr& model,
+                                   std::vector<cv::Rect>& occupied_labels);
 
         bool _searchTemplateSingleScale(cv::Mat image, cv::Mat s_mask_image, ROI roi,
                                         T_T::Template::Ptr model_id, int angle_start,
@@ -252,11 +253,6 @@ namespace SM_V1
          * @brief 判断两个旋转矩形是否重叠超过阈值
          */
         bool _maxOverlap(const cv::RotatedRect rect1, const cv::RotatedRect& rect2, float overlap);
-
-        /**
-         * @brief HSV 转 RGB
-         */
-        void _hsvToRgb(int* r, int* g, int* b, int h, int s, int v);
 
     private:
         int thread_num_;       /**< 使用的线程数量 */

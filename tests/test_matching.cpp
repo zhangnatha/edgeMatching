@@ -178,10 +178,10 @@ int main() {
         pyramidVisualization.rows <= patternA.rows) return 18;
     std::vector<cv::Mat> visualizationChannels;
     cv::split(pyramidVisualization, visualizationChannels);
-    cv::Mat yellowPixels = (visualizationChannels[1] > 240) &
-                           (visualizationChannels[2] > 240) &
-                           (visualizationChannels[0] < 40);
-    if (cv::countNonZero(yellowPixels) == 0) return 19;
+    cv::Mat greenPixels = (visualizationChannels[1] > 240) &
+                          (visualizationChannels[2] < 40) &
+                          (visualizationChannels[0] < 40);
+    if (cv::countNonZero(greenPixels) == 0) return 19;
     std::vector<cv::Size> pyramidSizes(1, patternA.size());
     for (int level = 1; level <= pyramidModel->template_cfg.num_levels; ++level)
         pyramidSizes.push_back(cv::Size(pyramidSizes.back().width / 2,
@@ -191,8 +191,8 @@ int main() {
     {
         const cv::Rect tile(tileX, tileY, pyramidSizes[level].width,
                             pyramidSizes[level].height);
-        if ((tile & cv::Rect(0, 0, yellowPixels.cols, yellowPixels.rows)) != tile ||
-            cv::countNonZero(yellowPixels(tile)) == 0) return 31;
+        if ((tile & cv::Rect(0, 0, greenPixels.cols, greenPixels.rows)) != tile ||
+            cv::countNonZero(greenPixels(tile)) == 0) return 31;
         tileX += pyramidSizes[level].width + 24;
         tileY += pyramidSizes[level].height + 24;
     }

@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <set>
@@ -24,6 +25,39 @@ bool number(int& i, int argc, const char* argv[], double& out) {
     char* end = nullptr;
     out = std::strtod(argv[++i], &end);
     return end && *end == '\0';
+}
+
+void drawStatusLabel(cv::Mat& image, const std::string& text)
+{
+    if (image.empty() || text.empty()) return;
+    const int margin = std::max(2, static_cast<int>(std::round(
+        std::min(image.cols, image.rows) * 0.012)));
+    const int pad = std::max(2, static_cast<int>(std::round(
+        std::min(image.cols, image.rows) * 0.010)));
+    const int availableWidth = std::max(1, image.cols - 2 * margin - 2 * pad);
+    double fontScale = std::max(0.20, std::min(1.0,
+        std::min(image.cols, image.rows) / 850.0));
+    int thickness = std::max(1, static_cast<int>(std::round(fontScale * 1.8)));
+    int baseline = 0;
+    cv::Size textSize;
+    while (fontScale > 0.10)
+    {
+        textSize = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX,
+                                   fontScale, thickness, &baseline);
+        if (textSize.width <= availableWidth) break;
+        fontScale *= 0.85;
+        thickness = std::max(1, static_cast<int>(std::round(fontScale * 1.8)));
+    }
+    if (textSize.width > availableWidth) return;
+    const int boxWidth = textSize.width + 2 * pad;
+    const int boxHeight = textSize.height + baseline + 2 * pad;
+    if (boxWidth <= 0 || boxHeight <= 0 || boxWidth > image.cols - 2 * margin ||
+        boxHeight > image.rows - 2 * margin) return;
+    const cv::Rect box(margin, margin, boxWidth, boxHeight);
+    cv::rectangle(image, box, cv::Scalar(24, 24, 24), cv::FILLED, cv::LINE_AA);
+    const cv::Point origin(box.x + pad, box.y + pad + textSize.height);
+    cv::putText(image, text, origin, cv::FONT_HERSHEY_SIMPLEX,
+                fontScale, cv::Scalar(255, 255, 255), thickness, cv::LINE_AA);
 }
 }
 
@@ -144,9 +178,11 @@ int main(int argc, const char* argv[]) {
     cv::Mat color;
     cv::cvtColor(image, color, cv::COLOR_GRAY2BGR);
     matcher.drawMatchResults(color, results, models);
-    cv::putText(color, "Time: " + std::to_string(timer.get("Template matching")) +
-                " ms  Matches: " + std::to_string(results.size()), cv::Point(10, 30),
-                cv::FONT_HERSHEY_SIMPLEX, 0.65, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+    std::ostringstream status;
+    status << std::fixed << std::setprecision(3)
+           << "Time: " << timer.get("Template matching")
+           << " ms  Matches: " << results.size();
+    drawStatusLabel(color, status.str());
     if (!cv::imwrite(outputPath, color)) {
         std::cerr << "Failed to write result image: " << outputPath << '\n'; return 1;
     }

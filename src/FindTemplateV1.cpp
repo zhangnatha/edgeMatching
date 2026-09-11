@@ -2618,141 +2618,26 @@ T_T::Template::Ptr SearchTemplate::loadModelFileFromBinary(std::string path)
 bool isPointInBounds(const cv::Point2f& pt, int cols, int rows) {
     return pt.x >= 0 && pt.x < cols && pt.y >= 0 && pt.y < rows;
 }
-// 辅助函数：将点裁剪到图像边界内
-cv::Point2f clipPoint(const cv::Point2f& pt, int cols, int rows) {
-    return cv::Point2f(
-        std::max(0.0f, std::min(static_cast<float>(cols - 1), pt.x)),
-        std::max(0.0f, std::min(static_cast<float>(rows - 1), pt.y))
-    );
+namespace
+{
+void calculateDrawingGradients(const cv::Mat& image, cv::Mat& gradientX, cv::Mat& gradientY);
 }
-
 
 void SearchTemplate::drawMatchResults(cv::Mat& image, const std::vector<T_T::MatchResult>& results,
                                       T_T::ShapeInfo::Ptr shapeInfo)
 {
-    std::vector<T_T::ShapePoint> shapePoints;
-    for (int i = 0; i < results.size(); i++)
-    {
-        // 颜色生成
-        int r, g, b;
-        _hsvToRgb(&r, &g, &b, 360.0 / results.size() * i, 100, 100);
-        if (results[i].score == 0) continue;
-
-        std::vector<T_T::ShapePoint> contours;
-        for (const auto& shapeAngle : shapeInfo->shape_angle)
-        {
-            double angleDiff = fabs(shapeAngle->angle - (-results[i].pose.angle));
-            if (angleDiff < 0.001)
-            {
-                contours = shapeAngle->shape_point;
-                break;
-            }
-        }
-
-        // 绘制轮廓点
-        cv::Point center(results[i].pose.x, results[i].pose.y);
-        for (const auto& contour : contours)
-        {
-            T_T::ShapePoint pt;
-            pt.x = contour.x + center.x;
-            pt.y = contour.y + center.y;
-            if (pt.x >= 0 && pt.x < image.cols && pt.y >= 0 && pt.y < image.rows)
-            {
-                image.at<cv::Vec3b>(pt.y, pt.x) = cv::Vec3b(0, 255, 0);
-            }
-        }
-
-        // // 绘制中心点
-        // cv::drawMarker(image, center, cv::Scalar(0, 0, 255), cv::MARKER_TILTED_CROSS, 20, 1, cv::LINE_AA);
-        //
-        // // 绘制模板框
-        // cv::RotatedRect rotatedRect = cv::RotatedRect(
-        //     cv::Point2f(results[i].pose.x, results[i].pose.y),
-        //     cv::Size2f(image_width_, image_height_), // 使用模板实际尺寸
-        //     -results[i].pose.angle // 角度取反以匹配坐标系
-        // );
-        // cv::Point2f vertices[4];
-        // rotatedRect.points(vertices);
-        // for (int j = 0; j < 4; j++)
-        // {
-        //     cv::line(image, vertices[j], vertices[(j + 1) % 4], cv::Scalar(r, g, b), 2, cv::LINE_AA);
-        // }
-        //
-        // // 绘制模板中心指向右侧的矢量
-        // cv::Point2f start_point(results[i].pose.x, results[i].pose.y);
-        // cv::Point2f end_point;
-        // double rad = -results[i].pose.angle * CV_PI / 180.0; // 角度取反并转换为弧度
-        // float arrow_length = image_width_ / 2.0f;
-        // end_point.x = start_point.x + arrow_length * cos(rad);
-        // end_point.y = start_point.y + arrow_length * sin(rad);
-        // cv::arrowedLine(image, start_point, end_point, cv::Scalar(r, g, b), 2, cv::LINE_AA, 0, 0.2);
-
-        // 绘制中心点
-        if (isPointInBounds(center, image.cols, image.rows)) {
-            cv::drawMarker(image, clipPoint(center, image.cols, image.rows),
-                           cv::Scalar(0, 0, 255), cv::MARKER_TILTED_CROSS, 20, 1, cv::LINE_AA);
-        }
-
-        // 绘制模板框
-        cv::RotatedRect rotatedRect = cv::RotatedRect(
-            cv::Point2f(results[i].pose.x, results[i].pose.y),
-            cv::Size2f(image_width_, image_height_),
-            -results[i].pose.angle
-        );
-        cv::Point2f vertices[4];
-        rotatedRect.points(vertices);
-        for (int j = 0; j < 4; j++) {
-            cv::Point2f p1_f = vertices[j];
-            cv::Point2f p2_f = vertices[(j + 1) % 4];
-            // 转换为 cv::Point 后调用 clipLine
-            cv::Point p1 = cv::Point(static_cast<int>(p1_f.x), static_cast<int>(p1_f.y));
-            cv::Point p2 = cv::Point(static_cast<int>(p2_f.x), static_cast<int>(p2_f.y));
-            if (cv::clipLine(cv::Rect(0, 0, image.cols, image.rows), p1, p2)) {
-                // 转回 cv::Point2f 用于绘制
-                p1_f = cv::Point2f(static_cast<float>(p1.x), static_cast<float>(p1.y));
-                p2_f = cv::Point2f(static_cast<float>(p2.x), static_cast<float>(p2.y));
-                cv::line(image, p1_f, p2_f, cv::Scalar(r, g, b), 2, cv::LINE_AA);
-            }
-        }
-
-        // 绘制模板中心指向右侧的矢量
-        cv::Point2f start_point(results[i].pose.x, results[i].pose.y);
-        cv::Point2f end_point;
-        double rad = -results[i].pose.angle * CV_PI / 180.0;
-        float arrow_length = image_width_ / 2.0f;
-        end_point.x = start_point.x + arrow_length * cos(rad);
-        end_point.y = start_point.y + arrow_length * sin(rad);
-        // 转换为 cv::Point 后调用 clipLine
-        cv::Point start = cv::Point(static_cast<int>(start_point.x), static_cast<int>(start_point.y));
-        cv::Point end = cv::Point(static_cast<int>(end_point.x), static_cast<int>(end_point.y));
-        if (cv::clipLine(cv::Rect(0, 0, image.cols, image.rows), start, end)) {
-            // 转回 cv::Point2f 用于绘制
-            start_point = cv::Point2f(static_cast<float>(start.x), static_cast<float>(start.y));
-            end_point = cv::Point2f(static_cast<float>(end.x), static_cast<float>(end.y));
-            cv::arrowedLine(image, start_point, end_point, cv::Scalar(r, g, b), 2, cv::LINE_AA, 0, 0.2);
-        }
-    }
-/*
-    // 绘制点与点之间的距离与连线
-    for (size_t i = 0; i < results.size() - 1; ++i)
-    {
-        // 颜色生成
-        int r, g, b;
-        _hsvToRgb(&r, &g, &b, 360.0 / results.size() * i, 100, 100);
-        if (results[i].score == 0) continue;
-
-        const T_T::MatchResult& p1 = results[i];
-        const T_T::MatchResult& p2 = results[i + 1];
-        // 计算欧氏距离
-        double distance = std::sqrt((p2.pose.x - p1.pose.x)*(p2.pose.x-p1.pose.x) +(p2.pose.y - p1.pose.y)*(p2.pose.y-p1.pose.y) );
-        // 计算中点
-        cv::Point2f midpoint((p1.pose.x + p2.pose.x) / 2, (p1.pose.y + p2.pose.y) / 2);
-        // 绘制连线
-        cv::line(image, cv::Point2f(p1.pose.x, p1.pose.y), cv::Point2f(p2.pose.x, p2.pose.y), cv::Scalar(r, g, b), 1, cv::LINE_AA);
-        // 绘制距离
-        cv::putText(image, std::to_string(distance), midpoint, cv::FONT_HERSHEY_PLAIN, 1, cv::Scalar(r, g, b), 1, cv::LINE_AA);
-    }
-*/
+    if (image.empty() || !shapeInfo) return;
+    auto model = std::make_shared<T_T::Template>();
+    model->template_cfg.id = 1;
+    for (const auto& result : results)
+        if (result.template_id > 0) { model->template_cfg.id = result.template_id; break; }
+    model->template_cfg.image_width = std::max(1, image_width_);
+    model->template_cfg.image_height = std::max(1, image_height_);
+    model->templates.push_back(shapeInfo);
+    cv::Mat gradientX, gradientY;
+    calculateDrawingGradients(image, gradientX, gradientY);
+    std::vector<cv::Rect> occupiedLabels;
+    _drawMatchResultsImpl(image, gradientX, gradientY, results, model, occupiedLabels);
 }
 
 namespace
@@ -2774,59 +2659,122 @@ void calculateDrawingGradients(const cv::Mat& image, cv::Mat& gradientX, cv::Mat
     gradientY.setTo(0.0f, ~valid);
 }
 
-void drawEdgeLabel(cv::Mat& image, cv::Point2f a, cv::Point2f b,
-                   const cv::Point2f& frameCenter, const std::string& text,
-                   const cv::Scalar& color)
+cv::Scalar resultDrawingColor(const T_T::MatchResult& result, size_t index,
+                              int fallbackTemplateId)
 {
-    cv::Point2f tangent = b - a;
-    const float edgeLength = std::sqrt(tangent.dot(tangent));
-    if (edgeLength < 1.0f || image.empty()) return;
-    tangent *= 1.0f / edgeLength;
-    // Keep labels readable from left to right.  Image y grows downwards, whereas
-    // getRotationMatrix2D uses a positive mathematical (counter-clockwise) angle.
-    if (tangent.x < 0.0f)
-    {
-        std::swap(a, b);
-        tangent = -tangent;
-    }
-    const double screenAngle = std::atan2(static_cast<double>(tangent.y), tangent.x) *
-                               180.0 / CV_PI;
-    const double fontScale = 0.45;
-    const int thickness = 1;
+    // Explicitly avoid the green/red semantic point colors for object frames.
+    static const cv::Scalar palette[] = {
+        cv::Scalar(255, 190, 0),   // cyan
+        cv::Scalar(220, 70, 20),   // blue
+        cv::Scalar(220, 0, 180),   // magenta
+        cv::Scalar(0, 145, 255),   // orange
+        cv::Scalar(180, 40, 220),  // violet
+        cv::Scalar(0, 220, 255),   // yellow
+        cv::Scalar(255, 130, 55),  // light blue
+        cv::Scalar(190, 90, 255)   // pink
+    };
+    const int id = result.template_id > 0 ? result.template_id : fallbackTemplateId;
+    const size_t hash = static_cast<size_t>(id >= 0 ? id : -static_cast<long long>(id)) *
+                        1315423911ull + index * 17u;
+    return palette[hash % (sizeof(palette) / sizeof(palette[0]))];
+}
+
+void drawHorizontalLabel(cv::Mat& image, const cv::RotatedRect& frame,
+                         const std::string& text, const cv::Scalar& color,
+                         std::vector<cv::Rect>& occupiedLabels)
+{
+    if (image.empty() || text.empty()) return;
+    const int margin = std::max(2, static_cast<int>(std::round(
+        std::min(image.cols, image.rows) * 0.012)));
+    const int topSafeArea = std::max(margin, std::min(48,
+        static_cast<int>(std::round(std::min(image.cols, image.rows) * 0.08))));
+    const double scaleLimit = std::max(0.25, std::min(0.80,
+        std::min(image.cols, image.rows) / 1050.0));
+    double fontScale = scaleLimit;
+    int thickness = std::max(1, static_cast<int>(std::round(fontScale * 1.7)));
     int baseline = 0;
-    const cv::Size textSize = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX,
-                                               fontScale, thickness, &baseline);
-    const int pad = 3;
-    cv::Mat label(textSize.height + baseline + 2 * pad, textSize.width + 2 * pad,
-                  CV_8UC3, cv::Scalar(30, 30, 30));
-    cv::putText(label, text, cv::Point(pad, pad + textSize.height),
-                cv::FONT_HERSHEY_SIMPLEX, fontScale, color, thickness, cv::LINE_AA);
-    cv::Mat mask(label.size(), CV_8UC1, cv::Scalar(255));
-    const cv::Point2f center(label.cols * 0.5f, label.rows * 0.5f);
-    const double opencvAngle = -screenAngle;
-    cv::Mat rotation = cv::getRotationMatrix2D(center, opencvAngle, 1.0);
-    const cv::Rect2f bounds = cv::RotatedRect(center, label.size(), opencvAngle).boundingRect2f();
-    rotation.at<double>(0, 2) += bounds.width * 0.5 - center.x;
-    rotation.at<double>(1, 2) += bounds.height * 0.5 - center.y;
-    cv::Mat rotatedLabel, rotatedMask;
-    cv::warpAffine(label, rotatedLabel, rotation, bounds.size(), cv::INTER_LINEAR,
-                   cv::BORDER_CONSTANT, cv::Scalar());
-    cv::warpAffine(mask, rotatedMask, rotation, bounds.size(), cv::INTER_NEAREST,
-                   cv::BORDER_CONSTANT, cv::Scalar());
-    const cv::Point2f midpoint = (a + b) * 0.5f;
-    cv::Point2f outward = midpoint - frameCenter;
-    const float outwardLength = std::sqrt(outward.dot(outward));
-    if (outwardLength > 1e-3f) outward *= 1.0f / outwardLength;
-    else outward = cv::Point2f(-tangent.y, tangent.x);
-    const cv::Point2f anchor = midpoint + outward * (0.5f * label.rows + 5.0f);
-    cv::Rect target(cvRound(anchor.x - rotatedLabel.cols * 0.5f),
-                    cvRound(anchor.y - rotatedLabel.rows * 0.5f),
-                    rotatedLabel.cols, rotatedLabel.rows);
-    const cv::Rect clipped = target & cv::Rect(0, 0, image.cols, image.rows);
-    if (clipped.empty()) return;
-    const cv::Rect source(clipped.x - target.x, clipped.y - target.y,
-                          clipped.width, clipped.height);
-    rotatedLabel(source).copyTo(image(clipped), rotatedMask(source));
+    cv::Size textSize;
+    do
+    {
+        textSize = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX,
+                                   fontScale, thickness, &baseline);
+        if (textSize.width + 2 * margin <= image.cols - 2 * margin) break;
+        fontScale *= 0.85;
+        thickness = std::max(1, static_cast<int>(std::round(fontScale * 1.7)));
+    } while (fontScale > 0.20);
+
+    const int pad = std::max(2, static_cast<int>(std::round(fontScale * 4.0)));
+    const int boxWidth = std::min(image.cols - 2 * margin,
+                                  textSize.width + 2 * pad);
+    const int boxHeight = textSize.height + baseline + 2 * pad;
+    if (boxWidth <= 0 || boxHeight <= 0 || boxHeight > image.rows - 2 * margin) return;
+
+    float topY = frame.center.y;
+    float bottomY = frame.center.y;
+    cv::Point2f vertices[4];
+    frame.points(vertices);
+    for (const auto& vertex : vertices)
+    {
+        topY = std::min(topY, vertex.y);
+        bottomY = std::max(bottomY, vertex.y);
+    }
+    const int gap = std::max(2, static_cast<int>(std::round(fontScale * 4.0)));
+    float leftX = frame.center.x;
+    float rightX = frame.center.x;
+    for (const auto& vertex : vertices)
+    {
+        leftX = std::min(leftX, vertex.x);
+        rightX = std::max(rightX, vertex.x);
+    }
+    const auto fittedBox = [&](int wantedX, int wantedY) {
+        const int x = std::max(margin, std::min(wantedX,
+            image.cols - margin - boxWidth));
+        const int y = std::max(topSafeArea, std::min(wantedY,
+            image.rows - margin - boxHeight));
+        return cv::Rect(x, y, boxWidth, boxHeight);
+    };
+    const int centerX = cvRound(frame.center.x - boxWidth * 0.5f);
+    const int top = cvRound(topY) - boxHeight - gap;
+    const int bottom = cvRound(bottomY) + gap;
+    const int middle = cvRound(frame.center.y - boxHeight * 0.5f);
+    std::vector<cv::Rect> candidates;
+    // Do not clamp an above/below label onto an image edge: that commonly
+    // collides with global status text or makes the label look detached.
+    if (top >= topSafeArea)
+    {
+        candidates.push_back(fittedBox(centerX, top));
+        candidates.push_back(fittedBox(cvRound(leftX), top));
+        candidates.push_back(fittedBox(cvRound(rightX) - boxWidth, top));
+    }
+    if (bottom + boxHeight <= image.rows - margin)
+        candidates.push_back(fittedBox(centerX, bottom));
+    candidates.push_back(fittedBox(cvRound(leftX) - boxWidth - gap, middle));
+    candidates.push_back(fittedBox(cvRound(rightX) + gap, middle));
+    candidates.push_back(fittedBox(centerX, cvRound(topY) + gap));
+    auto overlapArea = [&](const cv::Rect& candidate) {
+        int area = 0;
+        for (const auto& occupied : occupiedLabels)
+            area += (candidate & occupied).area();
+        return area;
+    };
+    cv::Rect box = candidates.front();
+    int bestOverlap = overlapArea(box);
+    for (size_t i = 1; i < candidates.size() && bestOverlap != 0; ++i)
+    {
+        const int overlap = overlapArea(candidates[i]);
+        if (overlap < bestOverlap)
+        {
+            box = candidates[i];
+            bestOverlap = overlap;
+        }
+    }
+    occupiedLabels.push_back(box);
+    cv::rectangle(image, box, color, cv::FILLED, cv::LINE_AA);
+    const cv::Point baselineOrigin(box.x + pad, box.y + pad + textSize.height);
+    cv::putText(image, text, baselineOrigin, cv::FONT_HERSHEY_SIMPLEX,
+                fontScale, cv::Scalar(0, 0, 0), thickness + 2, cv::LINE_AA);
+    cv::putText(image, text, baselineOrigin, cv::FONT_HERSHEY_SIMPLEX,
+                fontScale, cv::Scalar(255, 255, 255), thickness, cv::LINE_AA);
 }
 }
 
@@ -2836,13 +2784,15 @@ void SearchTemplate::drawMatchResults(cv::Mat& image,
 {
     cv::Mat gradientX, gradientY;
     calculateDrawingGradients(image, gradientX, gradientY);
-    _drawMatchResultsImpl(image, gradientX, gradientY, results, model);
+    std::vector<cv::Rect> occupiedLabels;
+    _drawMatchResultsImpl(image, gradientX, gradientY, results, model, occupiedLabels);
 }
 
 void SearchTemplate::_drawMatchResultsImpl(cv::Mat& image, const cv::Mat& gradientX,
                                            const cv::Mat& gradientY,
                                            const std::vector<T_T::MatchResult>& results,
-                                           const T_T::Template::Ptr& model)
+                                           const T_T::Template::Ptr& model,
+                                           std::vector<cv::Rect>& occupiedLabels)
 {
     if (image.empty() || !model || model->templates.empty()) return;
     const auto& shapeInfo = model->templates[0];
@@ -2851,10 +2801,7 @@ void SearchTemplate::_drawMatchResultsImpl(cv::Mat& image, const cv::Mat& gradie
         const auto& result = results[index];
         if (result.score <= 0.0) continue;
         if (result.template_id != -1 && result.template_id != model->template_cfg.id) continue;
-        int r, g, b;
-        _hsvToRgb(&r, &g, &b,
-                  results.empty() ? 0 : static_cast<int>(360.0 * index / results.size()), 100, 100);
-        const cv::Scalar color(b, g, r);
+        const cv::Scalar color = resultDrawingColor(result, index, model->template_cfg.id);
         const T_T::ShapeAngle::Ptr* selected = nullptr;
         double bestAngleDifference = std::numeric_limits<double>::max();
         for (const auto& angle : shapeInfo->shape_angle)
@@ -2900,23 +2847,13 @@ void SearchTemplate::_drawMatchResultsImpl(cv::Mat& image, const cv::Mat& gradie
                               -result.pose.angle);
         cv::Point2f vertices[4];
         frame.points(vertices);
-        double longest = -1.0;
-        cv::Point2f labelA, labelB;
         for (int edge = 0; edge < 4; ++edge)
         {
-            const cv::Point2f originalA = vertices[edge];
-            const cv::Point2f originalB = vertices[(edge + 1) % 4];
-            cv::Point a(cvRound(originalA.x), cvRound(originalA.y));
-            cv::Point bpt(cvRound(originalB.x), cvRound(originalB.y));
+            cv::Point a(cvRound(vertices[edge].x), cvRound(vertices[edge].y));
+            cv::Point bpt(cvRound(vertices[(edge + 1) % 4].x),
+                         cvRound(vertices[(edge + 1) % 4].y));
             if (!cv::clipLine(cv::Rect(0, 0, image.cols, image.rows), a, bpt)) continue;
             cv::line(image, a, bpt, color, 2, cv::LINE_AA);
-            const double length = cv::norm(originalA - originalB);
-            if (length > longest)
-            {
-                longest = length;
-                labelA = originalA;
-                labelB = originalB;
-            }
         }
 
         // The arrow is the template's positive x-axis and therefore makes the
@@ -2932,13 +2869,13 @@ void SearchTemplate::_drawMatchResultsImpl(cv::Mat& image, const cv::Mat& gradie
             cv::circle(image, arrowStart, 3, color, cv::FILLED, cv::LINE_AA);
             cv::arrowedLine(image, arrowStart, arrowEnd, color, 2, cv::LINE_AA, 0, 0.22);
         }
-        if (longest > 0.0)
-        {
-            char label[128];
-            std::snprintf(label, sizeof(label), "#%zu T:%d %.3f s:%.2f",
-                          index, result.template_id, result.score, result.scale);
-            drawEdgeLabel(image, labelA, labelB, frame.center, label, color);
-        }
+        char label[256];
+        const int labelTemplateId = result.template_id > 0
+            ? result.template_id : model->template_cfg.id;
+        std::snprintf(label, sizeof(label), "#%zu T%d S%.3f M%.2f C%.1f,%.1f,%.1f",
+                      index + 1, labelTemplateId, result.score, result.scale,
+                      result.pose.x, result.pose.y, result.pose.angle);
+        drawHorizontalLabel(image, frame, label, color, occupiedLabels);
     }
 }
 
@@ -2949,57 +2886,10 @@ void SearchTemplate::drawMatchResults(cv::Mat& image,
     if (image.empty()) return;
     cv::Mat gradientX, gradientY;
     calculateDrawingGradients(image, gradientX, gradientY);
+    std::vector<cv::Rect> occupiedLabels;
     for (const auto& model : models)
     {
         if (!model) continue;
-        _drawMatchResultsImpl(image, gradientX, gradientY, results, model);
-    }
-}
-
-void SearchTemplate::_hsvToRgb(int* r, int* g, int* b, int h, int s, int v)
-{
-    int i;
-
-    float rgb_min, rgb_max;
-    rgb_max = v * 2.55f;
-    rgb_min = rgb_max * (100 - s) / 100.0f;
-
-    i = h / 60;
-    int difs = h % 60;
-
-    float rgb_adj = (rgb_max - rgb_min) * difs / 60.0f;
-
-    switch (i)
-    {
-    case 0:
-        *r = rgb_max;
-        *g = rgb_min + rgb_adj;
-        *b = rgb_min;
-        break;
-    case 1:
-        *r = rgb_max - rgb_adj;
-        *g = rgb_max;
-        *b = rgb_min;
-        break;
-    case 2:
-        *r = rgb_min;
-        *g = rgb_max;
-        *b = rgb_min + rgb_adj;
-        break;
-    case 3:
-        *r = rgb_min;
-        *g = rgb_max - rgb_adj;
-        *b = rgb_max;
-        break;
-    case 4:
-        *r = rgb_min + rgb_adj;
-        *g = rgb_min;
-        *b = rgb_max;
-        break;
-    default: // case 5:
-        *r = rgb_max;
-        *g = rgb_min;
-        *b = rgb_max - rgb_adj;
-        break;
+        _drawMatchResultsImpl(image, gradientX, gradientY, results, model, occupiedLabels);
     }
 }
