@@ -147,5 +147,5 @@ private:
 };
 
 
-#endif //ROI_H
+#endif // ROI_H 宏定义结束
 

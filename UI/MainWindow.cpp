@@ -225,7 +225,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(englishAction_, &QAction::triggered, this, [this] { selectLanguage(true); });
     restoreUiState();
     resize(1280, 780);
-    log(tr("就绪。可在训练/推理页设置参数并执行。"));
+    log([this]() { return tr("就绪。可在训练/推理页设置参数并执行。"); });
 }
 
 MainWindow::~MainWindow()
@@ -474,7 +474,10 @@ void MainWindow::chooseTemplateImage()
     // 保留源像素用于预览；CreateTemplate 接受 1/3/4 通道 8 位图像，并在内部将
     // 私有副本转换为灰度。
     cv::Mat image = cv::imread(path.toStdString(), cv::IMREAD_UNCHANGED);
-    if (image.empty()) { showError(tr("无法读取模板图像：%1").arg(path)); return; }
+    if (image.empty()) {
+        showError([this, path]() { return tr("无法读取模板图像：%1").arg(path); });
+        return;
+    }
     templateImage_ = image;
     setPath(templatePath_, path);
     if (!modelOutputPathUserSet_)
@@ -483,7 +486,11 @@ void MainWindow::chooseTemplateImage()
         setPath(modelOutputPath_, QDir(runtimeOutputDir()).absoluteFilePath(
             QFileInfo(path).completeBaseName() + ".json"));
     }
-    log(tr("已载入模板图像 %1（%2 x %3）").arg(path).arg(image.cols).arg(image.rows));
+    const int cols = image.cols;
+    const int rows = image.rows;
+    log([this, path, cols, rows]() {
+        return tr("已载入模板图像 %1（%2 x %3）").arg(path).arg(cols).arg(rows);
+    });
 }
 
 void MainWindow::chooseModelOutput()
@@ -505,7 +512,10 @@ void MainWindow::chooseInputImage()
     // 保证搜索像素与加载 IMREAD_GRAYSCALE 的 CLI 推理路径逐字节等价；仅在写入彩色
     // 结果图时将该副本转换回 BGR。
     cv::Mat image = cv::imread(path.toStdString(), cv::IMREAD_GRAYSCALE);
-    if (image.empty()) { showError(tr("无法读取输入图像：%1").arg(path)); return; }
+    if (image.empty()) {
+        showError([this, path]() { return tr("无法读取输入图像：%1").arg(path); });
+        return;
+    }
     inputImage_ = image;
     setPath(inputPath_, path);
     if (!resultOutputPathUserSet_) {
@@ -513,7 +523,11 @@ void MainWindow::chooseInputImage()
         setPath(resultOutputPath_, QDir(runtimeOutputDir()).absoluteFilePath(
             QFileInfo(path).completeBaseName() + ".result.png"));
     }
-    log(tr("已载入推理图像 %1（%2 x %3）").arg(path).arg(image.cols).arg(image.rows));
+    const int cols = image.cols;
+    const int rows = image.rows;
+    log([this, path, cols, rows]() {
+        return tr("已载入推理图像 %1（%2 x %3）").arg(path).arg(cols).arg(rows);
+    });
 }
 
 void MainWindow::chooseModels()
@@ -523,7 +537,10 @@ void MainWindow::chooseModels()
     if (paths.isEmpty()) return;
     selectedModelPaths_ = paths;
     modelPaths_->setText(paths.join(QLatin1String("; ")));
-    log(tr("已选择 %1 个模型").arg(paths.size()));
+    const int count = paths.size();
+    log([this, count]() {
+        return tr("已选择 %1 个模型").arg(count);
+    });
 }
 
 void MainWindow::chooseResultOutput()
@@ -536,37 +553,39 @@ void MainWindow::chooseResultOutput()
     if (!path.isEmpty()) setPath(resultOutputPath_, path);
 }
 
-bool MainWindow::validateTraining(QString& error) const
+bool MainWindow::validateTraining(std::function<QString()>& errorFunc) const
 {
-    if (templateImage_.empty()) error = tr("请先选择模板图像");
-    else if (templateId_->value() <= 0) error = tr("Template ID 必须为正数");
-    else if (angleEnd_->value() < angleStart_->value()) error = tr("训练角度终止必须不小于起始");
-    else if (angleStep_->value() <= 0) error = tr("角度步长必须大于 0");
+    errorFunc = nullptr;
+    if (templateImage_.empty()) errorFunc = [this]() { return tr("请先选择模板图像"); };
+    else if (templateId_->value() <= 0) errorFunc = [this]() { return tr("Template ID 必须为正数"); };
+    else if (angleEnd_->value() < angleStart_->value()) errorFunc = [this]() { return tr("训练角度终止必须不小于起始"); };
+    else if (angleStep_->value() <= 0) errorFunc = [this]() { return tr("角度步长必须大于 0"); };
     else if (!createOtsu_->isChecked() && trainMaxContrast_->value() < trainMinContrast_->value())
-        error = tr("最大对比度必须不小于最小对比度");
-    return error.isEmpty();
+        errorFunc = [this]() { return tr("最大对比度必须不小于最小对比度"); };
+    return errorFunc == nullptr;
 }
 
-bool MainWindow::validateInference(QString& error) const
+bool MainWindow::validateInference(std::function<QString()>& errorFunc) const
 {
-    if (inputImage_.empty()) error = tr("请先选择输入图像");
-    else if (selectedModelPaths_.isEmpty() && !model_) error = tr("请至少选择一个模型文件");
-    else if (searchAngleEnd_->value() < searchAngleStart_->value()) error = tr("搜索角度终止必须不小于起始");
-    else if (minScore_->value() < 0 || minScore_->value() > 1) error = tr("最小得分必须在 0..1");
+    errorFunc = nullptr;
+    if (inputImage_.empty()) errorFunc = [this]() { return tr("请先选择输入图像"); };
+    else if (selectedModelPaths_.isEmpty() && !model_) errorFunc = [this]() { return tr("请至少选择一个模型文件"); };
+    else if (searchAngleEnd_->value() < searchAngleStart_->value()) errorFunc = [this]() { return tr("搜索角度终止必须不小于起始"); };
+    else if (minScore_->value() < 0 || minScore_->value() > 1) errorFunc = [this]() { return tr("最小得分必须在 0..1"); };
     else if (scaleMax_->value() < scaleMin_->value() || scaleStep_->value() <= 0)
-        error = tr("尺度范围或步长无效");
+        errorFunc = [this]() { return tr("尺度范围或步长无效"); };
     else if (minVisibleRatio_->value() < 0 || minVisibleRatio_->value() > 1)
-        error = tr("最小可见比例必须在 0..1");
-    else if (roiW_->value() < 0 || roiH_->value() < 0) error = tr("ROI 尺寸无效");
+        errorFunc = [this]() { return tr("最小可见比例必须在 0..1"); };
+    else if (roiW_->value() < 0 || roiH_->value() < 0) errorFunc = [this]() { return tr("ROI 尺寸无效"); };
     else if ((roiW_->value() > 0 || roiH_->value() > 0) &&
-             (roiW_->value() <= 0 || roiH_->value() <= 0)) error = tr("ROI 宽高必须同时为正数");
-    return error.isEmpty();
+             (roiW_->value() <= 0 || roiH_->value() <= 0)) errorFunc = [this]() { return tr("ROI 宽高必须同时为正数"); };
+    return errorFunc == nullptr;
 }
 
 void MainWindow::train()
 {
-    QString error;
-    if (!validateTraining(error)) { showError(error); return; }
+    std::function<QString()> errorFunc;
+    if (!validateTraining(errorFunc)) { showError(errorFunc); return; }
     if (trainWatcher_.isRunning() || inferWatcher_.isRunning()) return;
     model_.reset();
     trainLayerImages_.clear();
@@ -588,9 +607,10 @@ void MainWindow::train()
     const int minContrast = trainMinContrast_->value();
     const int maxContrast = trainMaxContrast_->value();
     const T_T::EdgeMethod edgeMethod = static_cast<T_T::EdgeMethod>(edgeMethod_->currentData().toInt());
-    trainTimingLabel_->setText(tr("纯训练耗时: --"));
-    log(tr("纯训练耗时: --（仅统计 CreateTemplate::createTemplate）"));
-    setBusy(true, tr("正在训练模板…"));
+    lastTrainElapsedMs_ = -1.0;
+    updateTimingLabels();
+    log([this]() { return tr("纯训练耗时: --（仅统计 CreateTemplate::createTemplate）"); });
+    setBusy(true, [this]() { return tr("正在训练模板…"); });
     trainWatcher_.setFuture(QtConcurrent::run([image, id, levels, start, end, step, otsu,
                                                 minContrast, maxContrast, edgeMethod]() {
         TrainResult result;
@@ -604,7 +624,7 @@ void MainWindow::train()
         result.elapsed_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - trainBegin).count();
         if (!created) {
-            result.error = QObject::tr("核心库创建模板失败");
+            result.errorFunc = []() { return QObject::tr("核心库创建模板失败"); };
             result.model.reset();
             return result;
         }
@@ -628,14 +648,14 @@ void MainWindow::train()
                 ContourBuilder::buildTemplateContours(result.layerImages.back(), result.model, level));
         }
         if (result.layerImages.empty()) {
-            result.error = QObject::tr("模板创建成功，但无法生成金字塔可视化");
+            result.errorFunc = []() { return QObject::tr("模板创建成功，但无法生成金字塔可视化"); };
             result.model.reset();
             return result;
         }
         result.image = result.layerImages.front().clone();
         result.contours = result.layerContours.front();
         if (result.image.empty()) {
-            result.error = QObject::tr("模板创建成功，但无法生成模板可视化");
+            result.errorFunc = []() { return QObject::tr("模板创建成功，但无法生成模板可视化"); };
             result.model.reset();
             return result;
         }
@@ -646,7 +666,10 @@ void MainWindow::train()
 
 void MainWindow::saveModel(bool binary)
 {
-    if (!model_) { showError(tr("请先完成训练")); return; }
+    if (!model_) {
+        showError([this]() { return tr("请先完成训练"); });
+        return;
+    }
     QString path = modelOutputPath_->text().trimmed();
     if (path.isEmpty()) {
         const QString initial = QDir(runtimeOutputDir()).absoluteFilePath(
@@ -665,38 +688,59 @@ void MainWindow::saveModel(bool binary)
 
     QString outputError;
     if (!ensureOutputParent(path, &outputError)) {
-        log(tr("保存模型失败：%1（%2）").arg(path, outputError));
-        showError(tr("保存模型失败：%1").arg(path));
+        log([this, path, outputError]() {
+            return tr("保存模型失败：%1（%2）").arg(path, outputError);
+        });
+        showError([this, path]() {
+            return tr("保存模型失败：%1").arg(path);
+        });
         return;
     }
 
     bool ok = false;
+    QString exceptionMsg;
+    bool isOpenCvEx = false;
     try {
         SM_V1::CreateTemplate trainer;
         ok = binary ? trainer.saveModelFile2Binary(model_, path.toStdString())
                     : trainer.saveModelFile2Json(model_, path.toStdString());
     } catch (const cv::Exception& ex) {
-        outputError = tr("OpenCV 异常：%1").arg(QString::fromLocal8Bit(ex.what()));
+        isOpenCvEx = true;
+        exceptionMsg = QString::fromLocal8Bit(ex.what());
     } catch (const std::exception& ex) {
-        outputError = tr("异常：%1").arg(QString::fromLocal8Bit(ex.what()));
+        exceptionMsg = QString::fromLocal8Bit(ex.what());
     }
     if (!ok) {
-        if (outputError.isEmpty()) outputError = tr("模型写入接口返回失败");
-        log(tr("保存模型失败：%1（%2）").arg(path, outputError));
-        showError(tr("保存模型失败：%1").arg(path));
+        log([this, path, isOpenCvEx, exceptionMsg]() {
+            QString detail;
+            if (isOpenCvEx) detail = tr("OpenCV 异常：%1").arg(exceptionMsg);
+            else if (!exceptionMsg.isEmpty()) detail = tr("异常：%1").arg(exceptionMsg);
+            else detail = tr("模型写入接口返回失败");
+            return tr("保存模型失败：%1（%2）").arg(path, detail);
+        });
+        showError([this, path]() {
+            return tr("保存模型失败：%1").arg(path);
+        });
         return;
     }
 
     QString pyramidError;
     const bool pyramidOk = savePyramidPreview(path, trainLayerImages_, trainLayerContours_, &pyramidError);
-    if (!pyramidOk)
-        log(tr("警告：金字塔特征图写入失败：%1.pyramid.png（%2）")
-            .arg(QFileInfo(path).completeBaseName(), pyramidError));
-    else
-        log(tr("金字塔特征图已保存：%1")
-            .arg(QFileInfo(path).absolutePath() + QLatin1String("/") +
-                 QFileInfo(path).completeBaseName() + QLatin1String(".pyramid.png")));
-    log(tr("模型已保存：%1").arg(path));
+    if (!pyramidOk) {
+        const QString base = QFileInfo(path).completeBaseName();
+        log([this, base, pyramidError]() {
+            return tr("警告：金字塔特征图写入失败：%1.pyramid.png（%2）").arg(base, pyramidError);
+        });
+    } else {
+        const QString pyrPath = QFileInfo(path).absolutePath() + QLatin1String("/") +
+                                QFileInfo(path).completeBaseName() + QLatin1String(".pyramid.png");
+        log([this, pyrPath]() {
+            return tr("金字塔特征图已保存：%1").arg(pyrPath);
+        });
+    }
+    log([this, path]() {
+        return tr("模型已保存：%1").arg(path);
+    });
 }
 
 void MainWindow::saveJson() { saveModel(false); }
@@ -704,8 +748,8 @@ void MainWindow::saveBinary() { saveModel(true); }
 
 void MainWindow::infer()
 {
-    QString error;
-    if (!validateInference(error)) { showError(error); return; }
+    std::function<QString()> errorFunc;
+    if (!validateInference(errorFunc)) { showError(errorFunc); return; }
     if (trainWatcher_.isRunning() || inferWatcher_.isRunning()) return;
     const cv::Mat image = inputImage_.clone();
     const QStringList paths = selectedModelPaths_;
@@ -724,19 +768,24 @@ void MainWindow::infer()
                               simd_->isChecked());
     const ROI searchRoi = (roiW_->value() > 0 && roiH_->value() > 0)
         ? ROI(cv::Rect(roiX_->value(), roiY_->value(), roiW_->value(), roiH_->value())) : ROI();
-    inferTimingLabel_->setText(tr("纯推理耗时: --"));
-    log(tr("纯推理耗时: --（仅统计 SearchTemplate::searchTemplate）"));
-    log(tr("推理配置：亚像素=%1，SIMD请求=%2（AVX2能力=%3）。")
-        .arg(scale.subpixel_refine ? tr("开") : tr("关"))
-        .arg(scale.use_simd ? tr("开") : tr("关"))
-        .arg(SM_V1::SearchTemplate::isSimdAvailable() ? tr("有") : tr("无")));
-    setBusy(true, tr("正在推理…"));
+    lastInferElapsedMs_ = -1.0;
+    updateTimingLabels();
+    log([this]() { return tr("纯推理耗时: --（仅统计 SearchTemplate::searchTemplate）"); });
+    const bool subpix = scale.subpixel_refine;
+    const bool simdReq = scale.use_simd;
+    const bool simdAvail = SM_V1::SearchTemplate::isSimdAvailable();
+    log([this, subpix, simdReq, simdAvail]() {
+        return tr("推理配置：亚像素=%1，SIMD请求=%2（AVX2能力=%3）。")
+            .arg(subpix ? tr("开") : tr("关"))
+            .arg(simdReq ? tr("开") : tr("关"))
+            .arg(simdAvail ? tr("有") : tr("无"));
+    });
+    setBusy(true, [this]() { return tr("正在推理…"); });
     inferWatcher_.setFuture(QtConcurrent::run([image, paths, fallback, aStart, aEnd, score, count,
                                                 overlap, levels, greed, sortY, scale, searchRoi]() {
         InferResult result;
         SM_V1::SearchTemplate matcher;
         std::vector<T_T::Template::Ptr> models;
-        QStringList modelIdLogs;
         if (paths.isEmpty() && fallback) models.push_back(fallback);
         for (const QString& path : paths) {
             T_T::Template::Ptr loaded;
@@ -744,23 +793,26 @@ void MainWindow::infer()
             if (path.endsWith(QLatin1String(".bin"), Qt::CaseInsensitive))
                 loaded = matcher.loadModelFileFromBinary(p);
             else loaded = matcher.loadModelFileFromJson(p);
-            if (!loaded) { result.error = QObject::tr("无法加载模型：%1").arg(path); return result; }
+            if (!loaded) {
+                result.errorFunc = [path]() { return QObject::tr("无法加载模型：%1").arg(path); };
+                return result;
+            }
             models.push_back(loaded);
         }
-        if (models.empty()) { result.error = QObject::tr("没有可用模型"); return result; }
+        if (models.empty()) {
+            result.errorFunc = []() { return QObject::tr("没有可用模型"); };
+            return result;
+        }
         std::vector<SM_V1::ModelIdAssignment> assignments;
         std::string normalizationError;
         if (!SM_V1::normalizeTemplateIds(models, assignments, &normalizationError)) {
-            result.error = QObject::tr("模型ID规范化失败：%1")
-                .arg(QString::fromStdString(normalizationError));
+            const QString normErr = QString::fromStdString(normalizationError);
+            result.errorFunc = [normErr]() {
+                return QObject::tr("模型ID规范化失败：%1").arg(normErr);
+            };
             return result;
         }
-        for (size_t i = 0; i < assignments.size(); ++i) {
-            const QString source = i < static_cast<size_t>(paths.size())
-                ? paths[static_cast<int>(i)] : QObject::tr("当前训练模型");
-            modelIdLogs << QObject::tr("模型ID映射：原ID=%1 -> 运行时ID=%2，文件=%3")
-                .arg(assignments[i].original_id).arg(assignments[i].runtime_id).arg(source);
-        }
+        result.modelIdAssignments = assignments;
         std::vector<T_T::MatchResult> matches;
         const auto inferBegin = std::chrono::steady_clock::now();
         const bool ok = matcher.searchTemplate(image, cv::Mat(), searchRoi, models,
@@ -769,12 +821,14 @@ void MainWindow::infer()
                                                 levels, greed, sortY, scale, matches);
         result.elapsed_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - inferBegin).count();
-        if (!ok) { result.error = QObject::tr("核心库匹配失败"); return result; }
+        if (!ok) {
+            result.errorFunc = []() { return QObject::tr("核心库匹配失败"); };
+            return result;
+        }
         result.image = image.clone();
         result.matches = matches;
         result.models = models;
         result.modelPaths = paths;
-        result.modelIdLogs = modelIdLogs;
         result.metric = static_cast<I_I::Metric>(scale.metric);
         result.scaleCfg = scale;
         result.angleStart = aStart;
@@ -789,10 +843,18 @@ void MainWindow::infer()
 void MainWindow::onTrainFinished()
 {
     const TrainResult result = trainWatcher_.result();
-    setBusy(false, QString());
-    trainTimingLabel_->setText(tr("纯训练耗时: %1 ms").arg(result.elapsed_ms, 0, 'f', 3));
-    log(tr("纯训练耗时: %1 ms").arg(result.elapsed_ms, 0, 'f', 3));
-    if (!result.ok) { showError(result.error); return; }
+    setBusy(false);
+    lastTrainElapsedMs_ = result.elapsed_ms;
+    updateTimingLabels();
+    const double trainMs = result.elapsed_ms;
+    log([this, trainMs]() {
+        return tr("纯训练耗时: %1 ms").arg(trainMs, 0, 'f', 3);
+    });
+    if (!result.ok) {
+        if (result.errorFunc) showError(result.errorFunc);
+        else showError(result.error);
+        return;
+    }
     model_ = result.model;
     trainLayerImages_ = result.layerImages;
     trainLayerContours_ = result.layerContours;
@@ -819,12 +881,16 @@ void MainWindow::onTrainFinished()
     saveJsonButton_->setEnabled(true);
     saveBinaryButton_->setEnabled(true);
     pyramidFeaturesButton_->setEnabled(true);
-    const QString edgeName = model_->template_cfg.edge_method == T_T::EDGE_DEVERNAY
-        ? tr("Devernay 亚像素")
-        : (model_->template_cfg.edge_method == T_T::EDGE_CANNY_PIXEL
-            ? tr("Canny 像素级") : tr("Canny + 抛物线亚像素"));
-    log(tr("训练完成：默认显示 L0 canonical 轮廓（共 %1 层，边缘算法=%2）。")
-        .arg(trainLayerImages_.size()).arg(edgeName));
+    const T_T::EdgeMethod edgeMethod = model_->template_cfg.edge_method;
+    const size_t layerCount = trainLayerImages_.size();
+    log([this, layerCount, edgeMethod]() {
+        const QString edgeName = edgeMethod == T_T::EDGE_DEVERNAY
+            ? tr("Devernay 亚像素")
+            : (edgeMethod == T_T::EDGE_CANNY_PIXEL
+                ? tr("Canny 像素级") : tr("Canny + 抛物线亚像素"));
+        return tr("训练完成：默认显示 L0 canonical 轮廓（共 %1 层，边缘算法=%2）。")
+            .arg(layerCount).arg(edgeName);
+    });
 }
 
 void MainWindow::onTrainPyramidLayerChanged(int index)
@@ -833,9 +899,13 @@ void MainWindow::onTrainPyramidLayerChanged(int index)
         index >= static_cast<int>(trainLayerContours_.size())) return;
     trainView_->setImage(matToImage(trainLayerImages_[index]));
     trainView_->setContours(trainLayerContours_[index]);
-    log(tr("训练预览切换至 L%1（%2×%3，%4 个特征）。")
-        .arg(index).arg(trainLayerImages_[index].cols).arg(trainLayerImages_[index].rows)
-        .arg(trainLayerContours_[index].size()));
+    const int cols = trainLayerImages_[index].cols;
+    const int rows = trainLayerImages_[index].rows;
+    const int contourCount = trainLayerContours_[index].size();
+    log([this, index, cols, rows, contourCount]() {
+        return tr("训练预览切换至 L%1（%2×%3，%4 个特征）。")
+            .arg(index).arg(cols).arg(rows).arg(contourCount);
+    });
 }
 
 void MainWindow::viewPyramidFeatures()
@@ -867,20 +937,41 @@ void MainWindow::viewPyramidFeatures()
     }
     trainView_->setImage(matToImage(visualization));
     trainView_->setOverlays(overlays);
-    log(tr("已显示金字塔各层特征综合图"));
+    log([this]() { return tr("已显示金字塔各层特征综合图"); });
 }
 
 void MainWindow::onInferFinished()
 {
     const InferResult result = inferWatcher_.result();
-    setBusy(false, QString());
-    inferTimingLabel_->setText(tr("纯推理耗时: %1 ms").arg(result.elapsed_ms, 0, 'f', 3));
-    log(tr("纯推理耗时: %1 ms").arg(result.elapsed_ms, 0, 'f', 3));
-    if (!result.ok) { showError(result.error); return; }
-    for (const QString& mapping : result.modelIdLogs) log(mapping);
-    inferView_->setImage(matToImage(result.image));
-    inferView_->setOverlays(MatchOverlay::buildMatchOverlays(result.image, result.matches,
-                                                             result.models, result.metric));
+    setBusy(false);
+    lastInferElapsedMs_ = result.elapsed_ms;
+    updateTimingLabels();
+    const double inferMs = result.elapsed_ms;
+    log([this, inferMs]() {
+        return tr("纯推理耗时: %1 ms").arg(inferMs, 0, 'f', 3);
+    });
+    if (!result.ok) {
+        if (result.errorFunc) showError(result.errorFunc);
+        else showError(result.error);
+        return;
+    }
+    for (size_t i = 0; i < result.modelIdAssignments.size(); ++i) {
+        const auto& assign = result.modelIdAssignments[i];
+        const QString source = i < static_cast<size_t>(result.modelPaths.size())
+            ? result.modelPaths[static_cast<int>(i)] : QString();
+        const int origId = assign.original_id;
+        const int runId = assign.runtime_id;
+        log([this, origId, runId, source]() {
+            const QString src = source.isEmpty() ? tr("当前训练模型") : source;
+            return tr("模型ID映射：原ID=%1 -> 运行时ID=%2，文件=%3")
+                .arg(origId).arg(runId).arg(src);
+        });
+    }
+    lastInferImage_ = result.image.clone();
+    lastInferOverlays_ = MatchOverlay::buildMatchOverlays(result.image, result.matches,
+                                                          result.models, result.metric);
+    inferView_->setImage(matToImage(lastInferImage_));
+    inferView_->setOverlays(lastInferOverlays_);
     tabs_->setCurrentIndex(1);
     const QString resultBase = inputPath_->text().isEmpty()
         ? QStringLiteral("result") : QFileInfo(inputPath_->text()).completeBaseName();
@@ -893,7 +984,9 @@ void MainWindow::onInferFinished()
     }
     QString outputError;
     if (!ensureOutputParent(output, &outputError)) {
-        log(tr("结果图保存失败：%1（%2）").arg(output, outputError));
+        log([this, output, outputError]() {
+            return tr("结果图保存失败：%1（%2）").arg(output, outputError);
+        });
     }
     cv::Mat rendered = result.image.clone();
     if (rendered.channels() == 1)
@@ -902,16 +995,25 @@ void MainWindow::onInferFinished()
     renderer.drawMatchResults(rendered, result.matches, result.models);
     if (outputError.isEmpty()) {
         try {
-            if (!cv::imwrite(output.toStdString(), rendered))
-                log(tr("结果图写入失败：%1（OpenCV 未写入文件）").arg(output));
-            else
-                log(tr("结果图已保存：%1").arg(output));
+            if (!cv::imwrite(output.toStdString(), rendered)) {
+                log([this, output]() {
+                    return tr("结果图写入失败：%1（OpenCV 未写入文件）").arg(output);
+                });
+            } else {
+                log([this, output]() {
+                    return tr("结果图已保存：%1").arg(output);
+                });
+            }
         } catch (const cv::Exception& ex) {
-            log(tr("结果图写入失败：%1（OpenCV 异常：%2）")
-                .arg(output, QString::fromLocal8Bit(ex.what())));
+            const QString what = QString::fromLocal8Bit(ex.what());
+            log([this, output, what]() {
+                return tr("结果图写入失败：%1（OpenCV 异常：%2）").arg(output, what);
+            });
         } catch (const std::exception& ex) {
-            log(tr("结果图写入失败：%1（异常：%2）")
-                .arg(output, QString::fromLocal8Bit(ex.what())));
+            const QString what = QString::fromLocal8Bit(ex.what());
+            log([this, output, what]() {
+                return tr("结果图写入失败：%1（异常：%2）").arg(output, what);
+            });
         }
     }
     if (outputError.isEmpty()) {
@@ -960,18 +1062,33 @@ void MainWindow::onInferFinished()
         }
         root["results"] = arr;
         if (!ensureOutputParent(jsonPath, &outputError)) {
-            log(tr("结果 JSON 保存失败：%1（%2）").arg(jsonPath, outputError));
+            log([this, jsonPath, outputError]() {
+                return tr("结果 JSON 保存失败：%1（%2）").arg(jsonPath, outputError);
+            });
         } else {
             QFile jf(jsonPath);
-            if (!jf.open(QIODevice::WriteOnly))
-                log(tr("结果 JSON 保存失败：%1（%2）").arg(jsonPath, jf.errorString()));
-            else if (jf.write(QJsonDocument(root).toJson(QJsonDocument::Indented)) < 0)
-                log(tr("结果 JSON 写入失败：%1（%2）").arg(jsonPath, jf.errorString()));
-            else
-                log(tr("结果 JSON 已保存：%1").arg(QFileInfo(jsonPath).absoluteFilePath()));
+            if (!jf.open(QIODevice::WriteOnly)) {
+                const QString errStr = jf.errorString();
+                log([this, jsonPath, errStr]() {
+                    return tr("结果 JSON 保存失败：%1（%2）").arg(jsonPath, errStr);
+                });
+            } else if (jf.write(QJsonDocument(root).toJson(QJsonDocument::Indented)) < 0) {
+                const QString errStr = jf.errorString();
+                log([this, jsonPath, errStr]() {
+                    return tr("结果 JSON 写入失败：%1（%2）").arg(jsonPath, errStr);
+                });
+            } else {
+                const QString absPath = QFileInfo(jsonPath).absoluteFilePath();
+                log([this, absPath]() {
+                    return tr("结果 JSON 已保存：%1").arg(absPath);
+                });
+            }
         }
     }
-    log(tr("推理完成：匹配 %1 个，结果图已显示。").arg(result.matches.size()));
+    const size_t matchCount = result.matches.size();
+    log([this, matchCount]() {
+        return tr("推理完成：匹配 %1 个，结果图已显示。").arg(matchCount);
+    });
     QString equivalent = QStringLiteral("inference \"%1\"").arg(inputPath_->text());
     for (const QString& modelPath : result.modelPaths)
         equivalent += QStringLiteral(" \"%1\"").arg(modelPath);
@@ -989,13 +1106,18 @@ void MainWindow::onInferFinished()
         .arg(result.scaleCfg.subpixel_refine ? QStringLiteral(" --subpixel") : QString())
         .arg(result.scaleCfg.use_simd ? QStringLiteral(" --simd") : QString())
         .arg(output);
-    log(tr("等价命令：%1").arg(equivalent));
+    log([this, equivalent]() {
+        return tr("等价命令：%1").arg(equivalent);
+    });
     for (size_t i = 0; i < result.matches.size(); ++i) {
-        const T_T::MatchResult& m = result.matches[i];
-        log(tr("#%1 id=%2 score=%3 scale=%4 pose=(%5, %6, %7) visible=%8")
-            .arg(i + 1).arg(m.template_id).arg(m.score, 0, 'f', 4).arg(m.scale, 0, 'f', 4)
-            .arg(m.pose.x, 0, 'f', 3).arg(m.pose.y, 0, 'f', 3).arg(m.pose.angle, 0, 'f', 3)
-            .arg(m.visible_ratio, 0, 'f', 3));
+        const T_T::MatchResult m = result.matches[i];
+        const size_t idx = i + 1;
+        log([this, idx, m]() {
+            return tr("#%1 id=%2 score=%3 scale=%4 pose=(%5, %6, %7) visible=%8")
+                .arg(idx).arg(m.template_id).arg(m.score, 0, 'f', 4).arg(m.scale, 0, 'f', 4)
+                .arg(m.pose.x, 0, 'f', 3).arg(m.pose.y, 0, 'f', 3).arg(m.pose.angle, 0, 'f', 3)
+                .arg(m.visible_ratio, 0, 'f', 3);
+        });
     }
 }
 
@@ -1103,6 +1225,10 @@ void MainWindow::selectLanguage(bool english)
 
 void MainWindow::rebuildUiForLanguage()
 {
+    const int tabIndex = tabs_ ? tabs_->currentIndex() : 0;
+    const int paramTabIndex = parameterTabs_ ? parameterTabs_->currentIndex() : 0;
+    const int pyramidIndex = pyramidDisplayLevel_ ? pyramidDisplayLevel_->currentIndex() : 0;
+
     QWidget* oldCentral = takeCentralWidget();
     delete oldCentral;
     buildUi();
@@ -1112,28 +1238,133 @@ void MainWindow::rebuildUiForLanguage()
     if (languageMenu_) languageMenu_->setTitle(tr("语言 / Language"));
     if (chineseAction_) { chineseAction_->setText(QStringLiteral("中文")); chineseAction_->setChecked(!english_); }
     if (englishAction_) { englishAction_->setText(QStringLiteral("English")); englishAction_->setChecked(english_); }
+
+    // 恢复金字塔层级下拉框
+    if (pyramidDisplayLevel_) {
+        const QSignalBlocker blocker(pyramidDisplayLevel_);
+        pyramidDisplayLevel_->clear();
+        for (int level = 0; level < static_cast<int>(trainLayerImages_.size()); ++level) {
+            const int featureCount = (model_ && level < static_cast<int>(model_->templates.size()) &&
+                                       model_->templates[level] &&
+                                       !model_->templates[level]->shape_angle.empty() &&
+                                       model_->templates[level]->shape_angle[0])
+                ? static_cast<int>(model_->templates[level]->shape_angle[0]->shape_point.size()) : 0;
+            const cv::Mat& layer = trainLayerImages_[level];
+            pyramidDisplayLevel_->addItem(
+                tr("L%1 (%2×%3, %4 特征)").arg(level).arg(layer.cols).arg(layer.rows).arg(featureCount),
+                level);
+        }
+        if (!trainLayerImages_.empty()) {
+            pyramidDisplayLevel_->setCurrentIndex(pyramidIndex >= 0 && pyramidIndex < static_cast<int>(trainLayerImages_.size()) ? pyramidIndex : 0);
+            pyramidDisplayLevel_->setEnabled(true);
+        } else {
+            pyramidDisplayLevel_->setEnabled(false);
+        }
+    }
+
+    // 恢复图像视图显示
+    if (trainView_ && !trainLayerImages_.empty()) {
+        int idx = (pyramidDisplayLevel_ && pyramidDisplayLevel_->currentIndex() >= 0)
+            ? pyramidDisplayLevel_->currentIndex() : 0;
+        if (idx < static_cast<int>(trainLayerImages_.size())) {
+            trainView_->setImage(matToImage(trainLayerImages_[idx]));
+            if (idx < static_cast<int>(trainLayerContours_.size())) {
+                trainView_->setContours(trainLayerContours_[idx]);
+            }
+        }
+    }
+    if (inferView_ && !lastInferImage_.empty()) {
+        inferView_->setImage(matToImage(lastInferImage_));
+        inferView_->setOverlays(lastInferOverlays_);
+    }
+
+    // 恢复按钮可用状态
+    if (pyramidFeaturesButton_) pyramidFeaturesButton_->setEnabled(model_ != nullptr);
+    if (saveJsonButton_) saveJsonButton_->setEnabled(model_ != nullptr);
+    if (saveBinaryButton_) saveBinaryButton_->setEnabled(model_ != nullptr);
+
+    // 恢复标签页
+    if (tabs_ && tabIndex >= 0 && tabIndex < tabs_->count()) {
+        tabs_->setCurrentIndex(tabIndex);
+    }
+    if (parameterTabs_ && paramTabIndex >= 0 && paramTabIndex < parameterTabs_->count()) {
+        parameterTabs_->setCurrentIndex(paramTabIndex);
+    }
+
+    // 刷新日志与计时标签
+    refreshLogView();
+    updateTimingLabels();
+}
+
+void MainWindow::setBusy(bool busy, const std::function<QString()>& messageFunc)
+{
+    if (progress_) progress_->setVisible(busy);
+    if (trainButton_) trainButton_->setEnabled(!busy);
+    if (pyramidFeaturesButton_) pyramidFeaturesButton_->setEnabled(!busy && model_ != nullptr);
+    if (inferButton_) inferButton_->setEnabled(!busy);
+    if (saveJsonButton_) saveJsonButton_->setEnabled(!busy && model_ != nullptr);
+    if (saveBinaryButton_) saveBinaryButton_->setEnabled(!busy && model_ != nullptr);
+    if (messageFunc) log(messageFunc);
 }
 
 void MainWindow::setBusy(bool busy, const QString& message)
 {
-    progress_->setVisible(busy);
-    trainButton_->setEnabled(!busy);
-    pyramidFeaturesButton_->setEnabled(!busy && model_ != nullptr);
-    inferButton_->setEnabled(!busy);
-    saveJsonButton_->setEnabled(!busy && model_ != nullptr);
-    saveBinaryButton_->setEnabled(!busy && model_ != nullptr);
-    if (!message.isEmpty()) log(message);
+    if (message.isEmpty()) {
+        setBusy(busy, std::function<QString()>());
+    } else {
+        setBusy(busy, [message]() { return message; });
+    }
+}
+
+void MainWindow::log(const std::function<QString()>& textFunc)
+{
+    if (!textFunc) return;
+    logHistory_.push_back(textFunc);
+    if (logView_) logView_->append(textFunc());
 }
 
 void MainWindow::log(const QString& text)
 {
-    if (logView_) logView_->append(text);
+    log([text]() { return text; });
+}
+
+void MainWindow::refreshLogView()
+{
+    if (!logView_) return;
+    logView_->clear();
+    for (const auto& func : logHistory_) {
+        if (func) logView_->append(func());
+    }
+}
+
+void MainWindow::showError(const std::function<QString()>& textFunc)
+{
+    if (!textFunc) return;
+    log([this, textFunc]() {
+        return tr("错误：%1").arg(textFunc());
+    });
+    QMessageBox::critical(this, tr("Shape Match"), textFunc());
 }
 
 void MainWindow::showError(const QString& text)
 {
-    log(tr("错误：%1").arg(text));
-    QMessageBox::critical(this, tr("Shape Match"), text);
+    showError([text]() { return text; });
+}
+
+void MainWindow::updateTimingLabels()
+{
+    if (trainTimingLabel_) {
+        if (lastTrainElapsedMs_ >= 0.0)
+            trainTimingLabel_->setText(tr("纯训练耗时: %1 ms").arg(lastTrainElapsedMs_, 0, 'f', 3));
+        else
+            trainTimingLabel_->setText(tr("纯训练耗时: --"));
+    }
+    if (inferTimingLabel_) {
+        if (lastInferElapsedMs_ >= 0.0)
+            inferTimingLabel_->setText(tr("纯推理耗时: %1 ms").arg(lastInferElapsedMs_, 0, 'f', 3));
+        else
+            inferTimingLabel_->setText(tr("纯推理耗时: --"));
+    }
 }
 
 QImage MainWindow::matToImage(const cv::Mat& image)

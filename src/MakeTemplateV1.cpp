@@ -98,7 +98,7 @@ std::vector<T_T::TemplateFeatures> extractDevernayFeatures(
     // 保持现有公开约定：对比度取最强梯度的百分比，范围为 0 到 255。
     const float low = static_cast<float>(std::max(0, minContrast)) / 255.0f * maxMagnitude;
     const float high = static_cast<float>(std::max(0, maxContrast)) / 255.0f * maxMagnitude;
-    std::vector<unsigned char> state(count, 0); // 1=weak, 2=strong/connected
+    std::vector<unsigned char> state(count, 0); // 1=弱边缘, 2=强边缘/已连接
     std::vector<size_t> pending;
     for (int y = 1; y < height - 1; ++y)
         for (int x = 1; x < width - 1; ++x)
@@ -684,7 +684,7 @@ bool CreateTemplate::_rotatedShapeInfo(T_T::ShapeInfo::Ptr shape_info_vec, int x
     for (int i = 1; i < angleNum; i++) //角度个数
     {
         double angle = -shape_info_vec->shape_angle[i]->angle;
-        float rad = (double)((angle * CV_PI) / 180); // 180/π =angle/rad
+        float rad = (double)((angle * CV_PI) / 180); // 180/π = 角度/弧度
 
         for (int j = 0; j < shapeSize; j++) //轮廓点数量
         {
@@ -716,9 +716,7 @@ bool CreateTemplate::_rotatedShapeInfo(T_T::ShapeInfo::Ptr shape_info_vec, int x
             // 更新旋转后的值dx,dy
             shape_info_vec->shape_angle[i]->shape_point[j].edge_dx = DX;
             shape_info_vec->shape_angle[i]->shape_point[j].edge_dy = -DY;
-            // 更新旋转后的值mag ---- 不变
-            //            shape_info_vec->shape_angle[i]->shape_point[j].edge_mag = shape_info_vec->shape_angle[0]->shape_point[j].edge_mag;
-            //            //保持不变
+            // 更新旋转后的幅值 edge_mag 保持不变：无需在此处重新赋值
         }
     }
     return true;
@@ -929,7 +927,7 @@ bool CreateTemplate::_createModel(cv::Mat template_img, cv::Mat mask_img, T_T::T
             default:
                 break;
     } // 分支结束
-        } // end for:金字塔层数
+        } // 金字塔层数循环结束
 
         //金字塔层数优化（图像缩放变形后失真的问题）
         float coefficient = 0.0f;
@@ -1178,7 +1176,7 @@ bool CreateTemplate::createTemplate(
         }
 
     }
-    else // num_levels = 0、1、2、3、4、5、6、7
+    else // 金字塔层数 = 0、1、2、3、4、5、6、7
     {
         model_id->template_cfg.num_levels = num_levels;
     }
@@ -1491,8 +1489,7 @@ bool CreateTemplate::saveModelFile2Json(T_T::Template::Ptr model_id, std::string
             fs << "template_pyramid"
                 << "[";
             {
-                //                for(int j = 0; j < templ_templates->shape_angle.size(); j++)    //每个角度
-                //                {
+                // 遍历每个角度
                 auto templ_angle = templ_templates->shape_angle[0];
                 fs << "{";
                 fs << "angle" << templ_angle->angle;
@@ -1504,12 +1501,11 @@ bool CreateTemplate::saveModelFile2Json(T_T::Template::Ptr model_id, std::string
                         auto templ_feature = templ_angle->shape_point[k];
                         fs << "[:" << templ_feature.x << templ_feature.y << templ_feature.edge_dx << templ_feature.
                             edge_dy
-                            << /*templ_feature.edge_mag <<*/ "]";
+                            << /* 不写入梯度幅值 */ "]";
                     }
                 }
                 fs << "]";
                 fs << "}";
-                //                }
             }
             fs << "]";
             fs << "}";
@@ -1584,7 +1580,7 @@ bool CreateTemplate::saveModelFile2Binary(T_T::Template::Ptr model_id, std::stri
     }
 
     // 只追加元数据，保证旧版二进制负载与旧读取器保持逐字节兼容。
-    const uint32_t metadataMagic = 0x534D4554u; // "SMET"
+    const uint32_t metadataMagic = 0x534D4554u; // 元数据魔数 "SMET"
     const uint32_t metadataVersion = 2u;
     const uint8_t edgeMethod = static_cast<uint8_t>(model_id->template_cfg.edge_method);
     const uint8_t originMode = static_cast<uint8_t>(model_id->template_cfg.origin_mode);
@@ -1612,7 +1608,7 @@ std::vector<cv::Point2d> CreateTemplate::getTemplatePointPyramid(T_T::Template::
         return std::vector<cv::Point2d>();
     }
     std::vector<cv::Point2d> result_points;
-    //    printf("金字塔层级：当前->%d，最大->%d\n", num_level, model_id->template_cfg.num_levels);
+    // 打印金字塔层级信息
     if (num_level <= model_id->template_cfg.num_levels)
     {
         const double scale = static_cast<double>(1 << std::max(0, num_level));

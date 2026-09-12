@@ -124,7 +124,7 @@ void ImageView::drawForeground(QPainter* painter, const QRectF& rect)
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing, false);
         QPen gridPen(QColor(105, 105, 105));
-        gridPen.setWidth(0); // cosmetic: one device pixel at every zoom level
+        gridPen.setWidth(0); // 装饰性线宽：在所有缩放级别下保持一个设备像素宽
         painter->setPen(gridPen);
 
         const int x0 = std::max(0, static_cast<int>(std::floor(visible.left())));

@@ -1040,8 +1040,8 @@ void SearchTemplate::_coarseMatching(
                 showVisualization("COARSE", search_image_back, 5);
                 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #endif
-            } // 搜索区域j的for
-        } // 搜索区域i的for
+            } // 搜索区域j的循环
+        } // 搜索区域i的循环
 
         //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         //~~~~~~~~~~~~~~< 对每一个角度下的粗匹配结果进行竞选 >~~~~~~~~~~~
@@ -1055,7 +1055,7 @@ void SearchTemplate::_coarseMatching(
             totalResultsTemp.insert(
                 totalResultsTemp.end(), resultsPerDegCandidates.begin(), resultsPerDegCandidates.end());
         }
-    } // 角度k的for循环 [OMP]
+    } // 角度k的循环 [OMP]
 
     //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     //~~~~~~~~~~~~~~< 对所有角度下的粗匹配结果进行竞选 >~~~~~~~~~~~~
@@ -2396,7 +2396,7 @@ T_T::Template::Ptr SearchTemplate::loadModelFileFromJson(std::string path)
     }
     temp->template_cfg.num_levels = fn_shapeMatchPre["num_levels"];
     temp->template_cfg.id = fn_shapeMatchPre["id"];
-    // temp->template_cfg.is_inited = fn_shapeMatchPre["is_inited"];
+    // 历史字段：temp->template_cfg.is_inited = fn_shapeMatchPre["is_inited"];
     image_width_ = temp->template_cfg.image_width = fn_shapeMatchPre["image_width"];
     image_height_ = temp->template_cfg.image_height = fn_shapeMatchPre["image_height"];
     const cv::FileNode originModeNode = fn_shapeMatchPre["origin_mode"];
@@ -2442,14 +2442,14 @@ T_T::Template::Ptr SearchTemplate::loadModelFileFromJson(std::string path)
                 double y;
                 float edge_dx;
                 float edge_dy;
-                //                float                                 edge_mag;
-                feature_info >> x >> y >> edge_dx >> edge_dy /*>> edge_mag*/;
+                // 梯度幅值
+                feature_info >> x >> y >> edge_dx >> edge_dy /* 不读取梯度幅值 */;
 
                 shape_point.x = x;
                 shape_point.y = y;
                 shape_point.edge_dx = edge_dx;
                 shape_point.edge_dy = edge_dy;
-                //                shape_point.edge_mag = edge_mag;
+                // 梯度幅值赋值：shape_point.edge_mag = edge_mag;
                 temp_angle->shape_point.push_back(shape_point);
             }
             temp_shapeinfo->shape_angle.push_back(temp_angle);
@@ -2493,7 +2493,7 @@ T_T::Template::Ptr SearchTemplate::loadModelFileFromJson(std::string path)
                 int xOffSet = (model_id_cp->template_cfg.image_width >> index) / 2;
                 int yOffSet = (model_id_cp->template_cfg.image_height >> index) / 2;
                 double angle = -model_id_cp->templates[index]->shape_angle[i]->angle;
-                float rad = (double)((angle * CV_PI) / 180); // 180/π =angle/rad
+                float rad = (double)((angle * CV_PI) / 180); // 180/π = 角度/弧度
 
                 for (int j = 0; j < shape_size; j++) //轮廓点数量
                 {
@@ -2698,7 +2698,7 @@ T_T::Template::Ptr SearchTemplate::loadModelFileFromBinary(std::string path)
                 int xOffSet = (model_id_cp->template_cfg.image_width >> index) / 2;
                 int yOffSet = (model_id_cp->template_cfg.image_height >> index) / 2;
                 double angle = -model_id_cp->templates[index]->shape_angle[i]->angle;
-                float rad = (double)((angle * CV_PI) / 180); // 180/π = angle/rad
+                float rad = (double)((angle * CV_PI) / 180); // 180/π = 角度/弧度
 
                 for (int j = 0; j < shape_size; j++) //轮廓点数量
                 {
@@ -2808,8 +2808,8 @@ cv::Scalar hsvToBgr(double h, double s, double v)
         cv::saturate_cast<uchar>((r + m) * 255.0 + 0.5));
 }
 
-cv::Scalar resultDrawingColor(const T_T::MatchResult& /*result*/, size_t index,
-                              int /*fallbackTemplateId*/)
+cv::Scalar resultDrawingColor(const T_T::MatchResult& /* 匹配结果 */, size_t index,
+                              int /* 默认模板ID */)
 {
     // 为每个检测目标生成唯一且彼此区分的颜色。
     // 明确排除轮廓可视化使用的绿色和红色语义点颜色：
@@ -2817,7 +2817,7 @@ cv::Scalar resultDrawingColor(const T_T::MatchResult& /*result*/, size_t index,
     // 区间 B：[25°，50°]（橙、琥珀、金色）共 25°。
     const double spanA = 145.0;
     const double spanB = 25.0;
-    const double totalSpan = spanA + spanB; // 170.0 degrees
+    const double totalSpan = spanA + spanB; // 总跨度 170.0 度
 
     // 使用黄金比例低差异序列，使相邻索引的颜色尽可能分散。
     const double phi = 0.6180339887498948482;

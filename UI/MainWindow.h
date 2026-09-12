@@ -3,6 +3,7 @@
 #include "ImageView.h"
 #include "FindTemplateV1.h"
 #include "MakeTemplateV1.h"
+#include "ModelIdNormalization.h"
 
 #include <QFutureWatcher>
 #include <QMainWindow>
@@ -11,6 +12,7 @@
 #include <QStringList>
 
 #include <opencv2/core.hpp>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -32,6 +34,7 @@ struct TrainResult
 {
     bool ok = false;
     QString error;
+    std::function<QString()> errorFunc;
     double elapsed_ms = 0.0;
     T_T::Template::Ptr model;
     cv::Mat image;
@@ -44,11 +47,13 @@ struct InferResult
 {
     bool ok = false;
     QString error;
+    std::function<QString()> errorFunc;
     double elapsed_ms = 0.0;
     cv::Mat image;
     std::vector<T_T::MatchResult> matches;
     std::vector<T_T::Template::Ptr> models;
     QStringList modelPaths;
+    std::vector<SM_V1::ModelIdAssignment> modelIdAssignments;
     QStringList modelIdLogs;
     I_I::Metric metric = I_I::USE_POLARITY;
     T_T::ScaleSearchCfg scaleCfg;
@@ -64,6 +69,12 @@ class MainWindow : public QMainWindow
 public:
     explicit MainWindow(QWidget* parent = nullptr);
     ~MainWindow() override;
+    void log(const std::function<QString()>& textFunc);
+    void log(const QString& text);
+    void refreshLogView();
+
+public slots:
+    void selectLanguage(bool english);
 
 private slots:
     void chooseTemplateImage();
@@ -79,18 +90,19 @@ private slots:
     void onInferFinished();
     void onTrainPyramidLayerChanged(int index);
     void viewPyramidFeatures();
-    void selectLanguage(bool english);
 
 private:
     void buildUi();
     QWidget* buildTrainPanel();
     QWidget* buildInferPanel();
     static QScrollArea* scrollPanel(QWidget* panel, QWidget* parent);
+    void setBusy(bool busy, const std::function<QString()>& messageFunc = nullptr);
     void setBusy(bool busy, const QString& message);
-    void log(const QString& text);
+    void showError(const std::function<QString()>& textFunc);
     void showError(const QString& text);
-    bool validateTraining(QString& error) const;
-    bool validateInference(QString& error) const;
+    bool validateTraining(std::function<QString()>& errorFunc) const;
+    bool validateInference(std::function<QString()>& errorFunc) const;
+    void updateTimingLabels();
     void saveModel(bool binary);
     void saveUiState() const;
     void restoreUiState();
@@ -162,4 +174,9 @@ private:
     QAction* englishAction_;
     QTranslator translator_;
     bool english_;
+    std::vector<std::function<QString()>> logHistory_;
+    double lastTrainElapsedMs_ = -1.0;
+    double lastInferElapsedMs_ = -1.0;
+    cv::Mat lastInferImage_;
+    QVector<ImageView::OverlayPath> lastInferOverlays_;
 };

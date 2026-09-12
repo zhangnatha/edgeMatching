@@ -284,4 +284,4 @@ namespace SM_V1
         bool use_simd_ = false; /**< 请求的 SIMD 运行时开关 */
         std::mutex search_mutex_; /**< 保护单实例的搜索期间配置 */
     };
-} // namespace SM_V1
+} // SM_V1 命名空间

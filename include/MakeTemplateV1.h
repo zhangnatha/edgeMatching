@@ -152,4 +152,4 @@ namespace SM_V1
         double origin_x_ = 0.0;
         double origin_y_ = 0.0;
     };
-} // namespace SM_V1
+} // SM_V1 命名空间
