@@ -2,39 +2,10 @@ cmake_minimum_required(VERSION 3.10)
 project(shapeMatch)
 
 include(CTest)
-include(CheckCXXCompilerFlag)
 
 option(SHAPE_MATCH_VISUALIZE_COARSE "Show coarse matching candidates while inference runs" OFF)
 option(SHAPE_MATCH_VISUALIZE_FINE "Show each coarse-to-fine refinement step" OFF)
-option(SHAPE_MATCH_ENABLE_SUBPIXEL "Enable subpixel feature refinement and matching" OFF)
-option(SHAPE_MATCH_ENABLE_SIMD "Enable x86 AVX2 SIMD acceleration" OFF)
-set(SHAPE_MATCH_EDGE_METHOD "CURRENT" CACHE STRING
-    "Edge feature backend: CURRENT or DEVERNAY")
-set_property(CACHE SHAPE_MATCH_EDGE_METHOD PROPERTY STRINGS CURRENT DEVERNAY)
-string(TOUPPER "${SHAPE_MATCH_EDGE_METHOD}" SHAPE_MATCH_EDGE_METHOD_NORMALIZED)
-if(NOT SHAPE_MATCH_EDGE_METHOD_NORMALIZED STREQUAL "CURRENT" AND
-   NOT SHAPE_MATCH_EDGE_METHOD_NORMALIZED STREQUAL "DEVERNAY")
-    message(FATAL_ERROR
-        "SHAPE_MATCH_EDGE_METHOD must be CURRENT or DEVERNAY; got '${SHAPE_MATCH_EDGE_METHOD}'")
-endif()
-if(SHAPE_MATCH_EDGE_METHOD_NORMALIZED STREQUAL "DEVERNAY")
-    set(SHAPE_MATCH_EDGE_METHOD_DEVERNAY 1)
-else()
-    set(SHAPE_MATCH_EDGE_METHOD_DEVERNAY 0)
-endif()
-
-if(SHAPE_MATCH_ENABLE_SIMD)
-    if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|x86|i[3-6]86)$")
-        message(FATAL_ERROR
-            "SHAPE_MATCH_ENABLE_SIMD=ON requires an x86/x86_64 target; "
-            "CMAKE_SYSTEM_PROCESSOR='${CMAKE_SYSTEM_PROCESSOR}'")
-    endif()
-    check_cxx_compiler_flag("-mavx2" SHAPE_MATCH_COMPILER_SUPPORTS_AVX2)
-    if(NOT SHAPE_MATCH_COMPILER_SUPPORTS_AVX2)
-        message(FATAL_ERROR
-            "SHAPE_MATCH_ENABLE_SIMD=ON requires compiler support for -mavx2")
-    endif()
-endif()
+option(BUILD_QT_CLIENT "Build the Qt5 Widgets client" ON)
 
 # --- C++ 标准 ---
 set(CMAKE_CXX_STANDARD 11)
@@ -56,19 +27,10 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -fopenmp -O3 -fPIC")
 # --- 输出构建信息 ---
 message(STATUS "Project: ${PROJECT_NAME}")
 message(STATUS "OpenCV_LIBRARIES = ${OpenCV_LIBRARIES}")
-message(STATUS "SHAPE_MATCH_ENABLE_SUBPIXEL = ${SHAPE_MATCH_ENABLE_SUBPIXEL}")
-message(STATUS "SHAPE_MATCH_ENABLE_SIMD = ${SHAPE_MATCH_ENABLE_SIMD}")
-message(STATUS "SHAPE_MATCH_EDGE_METHOD = ${SHAPE_MATCH_EDGE_METHOD_NORMALIZED}")
 
 # --- 构建共享库 ---
 add_library(MakeTemplate SHARED
     src/MakeTemplateV1.cpp
-)
-target_compile_definitions(MakeTemplate PUBLIC
-    SHAPE_MATCH_ENABLE_SUBPIXEL=$<BOOL:${SHAPE_MATCH_ENABLE_SUBPIXEL}>
-)
-target_compile_definitions(MakeTemplate PRIVATE
-    SHAPE_MATCH_EDGE_METHOD_DEVERNAY=${SHAPE_MATCH_EDGE_METHOD_DEVERNAY}
 )
 target_link_libraries(MakeTemplate ${OpenCV_LIBRARIES})
 
@@ -78,15 +40,7 @@ add_library(FindTemplate SHARED
 target_compile_definitions(FindTemplate PRIVATE
     SHAPE_MATCH_VISUALIZE_COARSE=$<BOOL:${SHAPE_MATCH_VISUALIZE_COARSE}>
     SHAPE_MATCH_VISUALIZE_FINE=$<BOOL:${SHAPE_MATCH_VISUALIZE_FINE}>
-    SHAPE_MATCH_ENABLE_SIMD=$<BOOL:${SHAPE_MATCH_ENABLE_SIMD}>
-    SHAPE_MATCH_EDGE_METHOD_DEVERNAY=${SHAPE_MATCH_EDGE_METHOD_DEVERNAY}
 )
-target_compile_definitions(FindTemplate PUBLIC
-    SHAPE_MATCH_ENABLE_SUBPIXEL=$<BOOL:${SHAPE_MATCH_ENABLE_SUBPIXEL}>
-)
-if(SHAPE_MATCH_ENABLE_SIMD)
-    target_compile_options(FindTemplate PRIVATE -mavx2)
-endif()
 target_link_libraries(FindTemplate ${OpenCV_LIBRARIES})
 
 # --- 构建可执行文件 ---
@@ -98,17 +52,12 @@ target_link_libraries(inference FindTemplate ${OpenCV_LIBRARIES})
 
 if(BUILD_TESTING)
     add_executable(test_matching tests/test_matching.cpp)
-    target_compile_definitions(test_matching PRIVATE
-        SHAPE_MATCH_EDGE_METHOD_DEVERNAY=${SHAPE_MATCH_EDGE_METHOD_DEVERNAY})
     target_link_libraries(test_matching MakeTemplate FindTemplate ${OpenCV_LIBRARIES})
     add_executable(test_intermediate_threshold tests/test_intermediate_threshold.cpp)
     target_compile_definitions(test_intermediate_threshold PRIVATE
-        ASSERT_DIR="${CMAKE_SOURCE_DIR}/assert"
-        SHAPE_MATCH_EDGE_METHOD_DEVERNAY=${SHAPE_MATCH_EDGE_METHOD_DEVERNAY})
+        ASSERT_DIR="${CMAKE_SOURCE_DIR}/assert")
     target_link_libraries(test_intermediate_threshold MakeTemplate FindTemplate ${OpenCV_LIBRARIES})
     add_executable(test_devernay tests/test_devernay.cpp)
-    target_compile_definitions(test_devernay PRIVATE
-        SHAPE_MATCH_EDGE_METHOD_DEVERNAY=${SHAPE_MATCH_EDGE_METHOD_DEVERNAY})
     target_link_libraries(test_devernay MakeTemplate ${OpenCV_LIBRARIES})
     add_executable(benchmark_matching tests/benchmark_matching.cpp)
     target_link_libraries(benchmark_matching FindTemplate ${OpenCV_LIBRARIES})
@@ -123,10 +72,6 @@ if(BUILD_TESTING)
     set_tests_properties(cli_reject_negative_contrast cli_reject_large_contrast
                          cli_reject_fractional_contrast cli_reject_missing_contrast
                          cli_reject_bad_metric PROPERTIES WILL_FAIL TRUE)
-    if(NOT SHAPE_MATCH_ENABLE_SUBPIXEL)
-        add_test(NAME cli_reject_subpixel_when_disabled COMMAND inference --subpixel)
-        set_tests_properties(cli_reject_subpixel_when_disabled PROPERTIES WILL_FAIL TRUE)
-    endif()
 endif()
 
 # --- 安装库 ---
@@ -146,3 +91,17 @@ install(FILES
     include/ROI.h
     DESTINATION ${CMAKE_BINARY_DIR}/publish/include/shapeMatch
 )
+
+if(BUILD_QT_CLIENT)
+    # Prefer the self-hosted Qt installation produced by UI/build_qt5.sh.
+    # CMAKE_PREFIX_PATH is prepended so an explicitly supplied Qt toolchain
+    # still remains available as a fallback when the local install is absent.
+    set(_shape_match_qt5_prefix "${CMAKE_SOURCE_DIR}/3rdparty/qt5")
+    if(EXISTS "${_shape_match_qt5_prefix}/lib/cmake/Qt5/Qt5Config.cmake")
+        list(PREPEND CMAKE_PREFIX_PATH "${_shape_match_qt5_prefix}")
+        set(Qt5_DIR "${_shape_match_qt5_prefix}/lib/cmake/Qt5" CACHE PATH
+            "Qt5 package configuration directory" FORCE)
+        message(STATUS "Using repository Qt5 installation: ${_shape_match_qt5_prefix}")
+    endif()
+    add_subdirectory(UI)
+endif()

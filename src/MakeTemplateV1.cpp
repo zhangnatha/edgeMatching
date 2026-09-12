@@ -8,13 +8,6 @@
 #include <cstring>
 #include <vector>
 
-#ifndef SHAPE_MATCH_ENABLE_SUBPIXEL
-#define SHAPE_MATCH_ENABLE_SUBPIXEL 0
-#endif
-#ifndef SHAPE_MATCH_EDGE_METHOD_DEVERNAY
-#define SHAPE_MATCH_EDGE_METHOD_DEVERNAY 0
-#endif
-
 using namespace SM_V1;
 
 namespace
@@ -134,9 +127,48 @@ std::vector<T_T::TemplateFeatures> extractDevernayFeatures(
                 {
                     state[neighbor] = 2;
                     pending.push_back(neighbor);
-                }
             }
+        }
     }
+
+    // Preserve small, real disconnected contours (for example holes after
+    // pyramid reduction).  A global high threshold can seed the outer edge
+    // but discard a weaker closed edge because it has no strong neighbour.
+    // Promote only sufficiently long weak components with a meaningful local
+    // maximum; isolated noise remains rejected.
+    std::vector<unsigned char> weakVisited(count, 0);
+    const float componentFloor = std::max(low, high * 0.35f);
+    for (int y = 1; y < height - 1; ++y)
+        for (int x = 1; x < width - 1; ++x)
+        {
+            const size_t seed = static_cast<size_t>(y) * width + x;
+            if (state[seed] != 1 || weakVisited[seed]) continue;
+            std::vector<size_t> component;
+            component.push_back(seed);
+            weakVisited[seed] = 1;
+            float componentMax = nms[seed];
+            for (size_t head = 0; head < component.size(); ++head)
+            {
+                const int cx = static_cast<int>(component[head] % width);
+                const int cy = static_cast<int>(component[head] / width);
+                for (int dy = -1; dy <= 1; ++dy)
+                    for (int dx = -1; dx <= 1; ++dx)
+                    {
+                        if (dx == 0 && dy == 0) continue;
+                        const int xx = cx + dx, yy = cy + dy;
+                        if (xx < 1 || xx >= width - 1 || yy < 1 || yy >= height - 1) continue;
+                        const size_t neighbor = static_cast<size_t>(yy) * width + xx;
+                        if (state[neighbor] == 1 && !weakVisited[neighbor])
+                        {
+                            weakVisited[neighbor] = 1;
+                            component.push_back(neighbor);
+                            componentMax = std::max(componentMax, nms[neighbor]);
+                        }
+                    }
+            }
+            if (component.size() >= 3 && componentMax >= componentFloor)
+                for (const size_t index : component) state[index] = 2;
+        }
 
     features.reserve(pending.size());
     for (int y = 1; y < height - 1; ++y)
@@ -266,7 +298,8 @@ void CreateTemplate::_extractShapeInfo(
     int height = image_data.rows;
     int32_t buffer_size = image_data.cols * image_data.rows;
 
-#if SHAPE_MATCH_EDGE_METHOD_DEVERNAY
+    if (edge_method_ == T_T::EDGE_DEVERNAY)
+    {
     // Devernay features are already localized in image coordinates.  Keep the
     // same center-origin model representation and unit gradient convention as
     // the CURRENT backend so serialized models and rotated caches are shared.
@@ -277,14 +310,14 @@ void CreateTemplate::_extractShapeInfo(
     for (size_t m = 0; m < devernay_features.size(); ++m)
     {
         angle_info_data->shape_point[m].x =
-            devernay_features[m].x - static_cast<float>(image_data.cols) / 2.0f;
+            devernay_features[m].x - origin_x_;
         angle_info_data->shape_point[m].y =
-            devernay_features[m].y - static_cast<float>(image_data.rows) / 2.0f;
+            devernay_features[m].y - origin_y_;
         angle_info_data->shape_point[m].edge_dx = devernay_features[m].edge_dx;
         angle_info_data->shape_point[m].edge_dy = devernay_features[m].edge_dy;
     }
-    return;
-#endif
+        return;
+    }
 
     std::vector<uint8_t> pBufOut(buffer_size);
     std::vector<int16_t> pBufGradX(buffer_size); //存取x方向偏导数dx
@@ -418,7 +451,6 @@ void CreateTemplate::_extractShapeInfo(
         }
     } // 结束 [S2：非极大值抑制]
 
-    //===================================================================================
     // 步骤 3：滞后阈值，双阈值
     //===================================================================================
     int flag = 1;
@@ -477,7 +509,6 @@ void CreateTemplate::_extractShapeInfo(
                 if (fdx != 0 || fdy != 0)
                 {
                     float magnitude = (!(std::fabs(magnitude_origin) < 1e-6)) ? (1 / magnitude_origin) : 0;
-#if SHAPE_MATCH_ENABLE_SUBPIXEL
                     const float nx = fdx * magnitude;
                     const float ny = fdy * magnitude;
                     // Localize the edge maximum along its gradient normal with a
@@ -501,13 +532,14 @@ void CreateTemplate::_extractShapeInfo(
                     const float after = sampleMagnitude(i + nx, j + ny);
                     const float denominator = before - 2.0f * magnitude_origin + after;
                     float offset = 0.0f;
-                    if (denominator < -1e-6f)
+                    // CANNY_PIXEL deliberately keeps the NMS pixel location.
+                    // CURRENT retains the historical normal-direction
+                    // parabolic subpixel correction.
+                    if (edge_method_ != T_T::EDGE_CANNY_PIXEL && denominator < -1e-6f)
                         offset = std::max(-0.5f, std::min(0.5f,
                             0.5f * (before - after) / denominator));
-                    TF0degree.push_back({i + offset * nx, j + offset * ny,
-#else
-                    TF0degree.push_back({static_cast<double>(i), static_cast<double>(j),
-#endif
+                    TF0degree.push_back({static_cast<double>(i) + offset * nx,
+                                         static_cast<double>(j) + offset * ny,
                                          (float)fdx, (float)fdy, magnitude});
                 }
             }
@@ -548,8 +580,8 @@ void CreateTemplate::_extractShapeInfo(
     {
         //坐标变化
         //此时特征点坐标按照坐标原点在图像的[左上角]  ---> 以图像[中心]为原点的坐标
-        angle_info_data->shape_point[m].x = TF0degree_temp[m].x - static_cast<float>(image_data.cols) / 2;
-        angle_info_data->shape_point[m].y = TF0degree_temp[m].y - static_cast<float>(image_data.rows) / 2;
+        angle_info_data->shape_point[m].x = TF0degree_temp[m].x - origin_x_;
+        angle_info_data->shape_point[m].y = TF0degree_temp[m].y - origin_y_;
 
         angle_info_data->shape_point[m].edge_dx = TF0degree_temp[m].edge_dx * TF0degree_temp[m].edge_mag;
         angle_info_data->shape_point[m].edge_dy = TF0degree_temp[m].edge_dy * TF0degree_temp[m].edge_mag;
@@ -760,6 +792,10 @@ bool CreateTemplate::_createModel(cv::Mat template_img, cv::Mat mask_img, T_T::T
             {
             case 0:
                 {
+                    origin_x_ = model_id->template_cfg.origin_mode == T_T::ORIGIN_DOMAIN_CENTROID
+                        ? model_id->template_cfg.origin_x : template_img.cols * 0.5;
+                    origin_y_ = model_id->template_cfg.origin_mode == T_T::ORIGIN_DOMAIN_CENTROID
+                        ? model_id->template_cfg.origin_y : template_img.rows * 0.5;
                     isBuild = _buildModelList(
                         model_id->templates[0], template_img, mask_img, model_id->template_cfg.min_contrast,
                         model_id->template_cfg.max_contrast);
@@ -770,6 +806,11 @@ bool CreateTemplate::_createModel(cv::Mat template_img, cv::Mat mask_img, T_T::T
                 {
                     cv::pyrDown(template_img, template_imgPy1, cv::Size(template_img.cols / 2, template_img.rows / 2));
                     cv::pyrDown(mask_img, mask_imgPy1, cv::Size(mask_img.cols / 2, mask_img.rows / 2));
+
+                    origin_x_ = model_id->template_cfg.origin_mode == T_T::ORIGIN_DOMAIN_CENTROID
+                        ? model_id->template_cfg.origin_x / 2.0 : template_imgPy1.cols * 0.5;
+                    origin_y_ = model_id->template_cfg.origin_mode == T_T::ORIGIN_DOMAIN_CENTROID
+                        ? model_id->template_cfg.origin_y / 2.0 : template_imgPy1.rows * 0.5;
 
                     isBuild = _buildModelList(
                         model_id->templates[1],
@@ -785,6 +826,11 @@ bool CreateTemplate::_createModel(cv::Mat template_img, cv::Mat mask_img, T_T::T
                     cv::pyrDown(template_imgPy1, template_imgPy2, cv::Size(template_imgPy1.cols / 2, template_imgPy1.rows / 2));
                     cv::pyrDown(mask_imgPy1, mask_imgPy2, cv::Size(mask_imgPy1.cols / 2, mask_imgPy1.rows / 2));
 
+                    origin_x_ = model_id->template_cfg.origin_mode == T_T::ORIGIN_DOMAIN_CENTROID
+                        ? model_id->template_cfg.origin_x / 4.0 : template_imgPy2.cols * 0.5;
+                    origin_y_ = model_id->template_cfg.origin_mode == T_T::ORIGIN_DOMAIN_CENTROID
+                        ? model_id->template_cfg.origin_y / 4.0 : template_imgPy2.rows * 0.5;
+
                     isBuild = _buildModelList(
                         model_id->templates[2],
                         template_imgPy2,
@@ -798,6 +844,11 @@ bool CreateTemplate::_createModel(cv::Mat template_img, cv::Mat mask_img, T_T::T
                 {
                     cv::pyrDown(template_imgPy2, template_imgPy3, cv::Size(template_imgPy2.cols / 2, template_imgPy2.rows / 2));
                     cv::pyrDown(mask_imgPy2, mask_imgPy3, cv::Size(mask_imgPy2.cols / 2, mask_imgPy2.rows / 2));
+
+                    origin_x_ = model_id->template_cfg.origin_mode == T_T::ORIGIN_DOMAIN_CENTROID
+                        ? model_id->template_cfg.origin_x / 8.0 : template_imgPy3.cols * 0.5;
+                    origin_y_ = model_id->template_cfg.origin_mode == T_T::ORIGIN_DOMAIN_CENTROID
+                        ? model_id->template_cfg.origin_y / 8.0 : template_imgPy3.rows * 0.5;
 
                     isBuild = _buildModelList(
                         model_id->templates[3],
@@ -813,6 +864,11 @@ bool CreateTemplate::_createModel(cv::Mat template_img, cv::Mat mask_img, T_T::T
                     cv::pyrDown(template_imgPy3, template_imgPy4, cv::Size(template_imgPy3.cols / 2, template_imgPy3.rows / 2));
                     cv::pyrDown(mask_imgPy3, mask_imgPy4, cv::Size(mask_imgPy3.cols / 2, mask_imgPy3.rows / 2));
 
+                    origin_x_ = model_id->template_cfg.origin_mode == T_T::ORIGIN_DOMAIN_CENTROID
+                        ? model_id->template_cfg.origin_x / 16.0 : template_imgPy4.cols * 0.5;
+                    origin_y_ = model_id->template_cfg.origin_mode == T_T::ORIGIN_DOMAIN_CENTROID
+                        ? model_id->template_cfg.origin_y / 16.0 : template_imgPy4.rows * 0.5;
+
                     isBuild = _buildModelList(
                         model_id->templates[4],
                         template_imgPy4,
@@ -826,6 +882,11 @@ bool CreateTemplate::_createModel(cv::Mat template_img, cv::Mat mask_img, T_T::T
                 {
                     cv::pyrDown(template_imgPy4, template_imgPy5, cv::Size(template_imgPy4.cols / 2, template_imgPy4.rows / 2));
                     cv::pyrDown(mask_imgPy4, mask_imgPy5, cv::Size(mask_imgPy4.cols / 2, mask_imgPy4.rows / 2));
+
+                    origin_x_ = model_id->template_cfg.origin_mode == T_T::ORIGIN_DOMAIN_CENTROID
+                        ? model_id->template_cfg.origin_x / 32.0 : template_imgPy5.cols * 0.5;
+                    origin_y_ = model_id->template_cfg.origin_mode == T_T::ORIGIN_DOMAIN_CENTROID
+                        ? model_id->template_cfg.origin_y / 32.0 : template_imgPy5.rows * 0.5;
 
                     isBuild = _buildModelList(
                         model_id->templates[5],
@@ -841,6 +902,11 @@ bool CreateTemplate::_createModel(cv::Mat template_img, cv::Mat mask_img, T_T::T
                     cv::pyrDown(template_imgPy5, template_imgPy6, cv::Size(template_imgPy5.cols / 2, template_imgPy5.rows / 2));
                     cv::pyrDown(mask_imgPy5, mask_imgPy6, cv::Size(mask_imgPy5.cols / 2, mask_imgPy5.rows / 2));
 
+                    origin_x_ = model_id->template_cfg.origin_mode == T_T::ORIGIN_DOMAIN_CENTROID
+                        ? model_id->template_cfg.origin_x / 64.0 : template_imgPy6.cols * 0.5;
+                    origin_y_ = model_id->template_cfg.origin_mode == T_T::ORIGIN_DOMAIN_CENTROID
+                        ? model_id->template_cfg.origin_y / 64.0 : template_imgPy6.rows * 0.5;
+
                     isBuild = _buildModelList(
                         model_id->templates[6],
                         template_imgPy6,
@@ -854,6 +920,11 @@ bool CreateTemplate::_createModel(cv::Mat template_img, cv::Mat mask_img, T_T::T
                 {
                     cv::pyrDown(template_imgPy6, template_imgPy7, cv::Size(template_imgPy6.cols / 2, template_imgPy6.rows / 2));
                     cv::pyrDown(mask_imgPy6, mask_imgPy7, cv::Size(mask_imgPy6.cols / 2, mask_imgPy6.rows / 2));
+
+                    origin_x_ = model_id->template_cfg.origin_mode == T_T::ORIGIN_DOMAIN_CENTROID
+                        ? model_id->template_cfg.origin_x / 128.0 : template_imgPy7.cols * 0.5;
+                    origin_y_ = model_id->template_cfg.origin_mode == T_T::ORIGIN_DOMAIN_CENTROID
+                        ? model_id->template_cfg.origin_y / 128.0 : template_imgPy7.rows * 0.5;
 
                     isBuild = _buildModelList(
                         model_id->templates[7],
@@ -975,13 +1046,23 @@ bool CreateTemplate::createTemplate(
     bool create_otsu,
     int min_contrast,
     int max_contrast,
-    T_T::Template::Ptr model_id)
+    T_T::Template::Ptr model_id,
+    T_T::EdgeMethod edge_method,
+    T_T::TemplateOriginMode origin_mode)
 {
     if (!model_id)
     {
         std::cerr << "Template creation failed: model_id is empty." << std::endl;
         return false;
     }
+    if (edge_method != T_T::EDGE_CURRENT && edge_method != T_T::EDGE_DEVERNAY &&
+        edge_method != T_T::EDGE_CANNY_PIXEL)
+        return false;
+    edge_method_ = edge_method;
+    model_id->template_cfg.edge_method = edge_method;
+    if (origin_mode != T_T::ORIGIN_IMAGE_CENTER &&
+        origin_mode != T_T::ORIGIN_DOMAIN_CENTROID)
+        return false;
     if (temp.empty() || mask.empty())
     {
         std::cerr << "Template creation failed: template image and mask must not be empty." << std::endl;
@@ -1060,6 +1141,21 @@ bool CreateTemplate::createTemplate(
     if (model_id->template_cfg.id <= 0) model_id->template_cfg.id = 1;
     model_id->template_cfg.image_width = tempMat.cols;
     model_id->template_cfg.image_height = tempMat.rows;
+    model_id->template_cfg.origin_mode = origin_mode;
+    if (origin_mode == T_T::ORIGIN_DOMAIN_CENTROID) {
+        const cv::Moments moments = cv::moments(maskMat, true);
+        if (moments.m00 > 1e-9) {
+            model_id->template_cfg.origin_x = moments.m10 / moments.m00;
+            model_id->template_cfg.origin_y = moments.m01 / moments.m00;
+        } else {
+            model_id->template_cfg.origin_mode = T_T::ORIGIN_IMAGE_CENTER;
+            model_id->template_cfg.origin_x = tempMat.cols * 0.5;
+            model_id->template_cfg.origin_y = tempMat.rows * 0.5;
+        }
+    } else {
+        model_id->template_cfg.origin_x = tempMat.cols * 0.5;
+        model_id->template_cfg.origin_y = tempMat.rows * 0.5;
+    }
     // 由模板图像确定金字塔层数：-1则为自动设置层数
     if (num_levels == -1)
     {
@@ -1339,8 +1435,26 @@ bool CreateTemplate::createTemplate(
             const int level_width = (tempMat.cols + scale - 1) / scale;
             const int level_height = (tempMat.rows + scale - 1) / scale;
             const size_t feature_count = model_id->templates[level]->shape_angle[0]->shape_point.size();
+            // Keep the established quality floor (40) for automatic models;
+            // the HALCON-compatible hard safety requirement is four points,
+            // so sparse levels still back off rather than being exposed.
             if (std::min(level_width, level_height) >= 8 && feature_count >= 40) { break; }
             --model_id->template_cfg.num_levels;
+        }
+    }
+    else if (model_id->template_cfg.num_levels > 0) {
+        const int level = model_id->template_cfg.num_levels;
+        const size_t feature_count = model_id->templates[level] &&
+            !model_id->templates[level]->shape_angle.empty() &&
+            model_id->templates[level]->shape_angle[0]
+            ? model_id->templates[level]->shape_angle[0]->shape_point.size() : 0;
+        if (feature_count < 4) {
+            std::cerr << "Template creation failed: requested top pyramid level has fewer than 4 features."
+                      << std::endl;
+            model_id->templates.clear();
+            model_id->template_cfg.is_inited = false;
+            model_id->is_empty = true;
+            return false;
         }
     }
     model_id->is_empty = false;
@@ -1370,6 +1484,10 @@ bool CreateTemplate::saveModelFile2Json(T_T::Template::Ptr model_id, std::string
     fs << "image_width" << model_id->template_cfg.image_width;
     fs << "image_height" << model_id->template_cfg.image_height;
     fs << "is_inited" << model_id->template_cfg.is_inited;
+    fs << "edge_method" << static_cast<int>(model_id->template_cfg.edge_method);
+    fs << "origin_mode" << static_cast<int>(model_id->template_cfg.origin_mode);
+    fs << "origin_x" << model_id->template_cfg.origin_x;
+    fs << "origin_y" << model_id->template_cfg.origin_y;
 
     //保存模板制作产生的特征[金字塔每层的0°角度的特征点]
     fs << "templates"
@@ -1475,6 +1593,21 @@ bool CreateTemplate::saveModelFile2Binary(T_T::Template::Ptr model_id, std::stri
         }
     }
 
+    // Append-only metadata keeps the legacy binary payload byte-for-byte
+    // compatible with older readers.
+    const uint32_t metadataMagic = 0x534D4554u; // "SMET"
+    const uint32_t metadataVersion = 2u;
+    const uint8_t edgeMethod = static_cast<uint8_t>(model_id->template_cfg.edge_method);
+    const uint8_t originMode = static_cast<uint8_t>(model_id->template_cfg.origin_mode);
+    const uint8_t reserved[2] = {0, 0};
+    ofs.write(reinterpret_cast<const char*>(&metadataMagic), sizeof(metadataMagic));
+    ofs.write(reinterpret_cast<const char*>(&metadataVersion), sizeof(metadataVersion));
+    ofs.write(reinterpret_cast<const char*>(&edgeMethod), sizeof(edgeMethod));
+    ofs.write(reinterpret_cast<const char*>(&originMode), sizeof(originMode));
+    ofs.write(reinterpret_cast<const char*>(reserved), sizeof(reserved));
+    ofs.write(reinterpret_cast<const char*>(&model_id->template_cfg.origin_x), sizeof(model_id->template_cfg.origin_x));
+    ofs.write(reinterpret_cast<const char*>(&model_id->template_cfg.origin_y), sizeof(model_id->template_cfg.origin_y));
+
     ofs.close(); // 关闭文件流
     std::cout << "Template file saved successfully [binary]." << std::endl;
     return true;
@@ -1493,13 +1626,18 @@ std::vector<cv::Point2d> CreateTemplate::getTemplatePointPyramid(T_T::Template::
     //    printf("金字塔层级：当前->%d，最大->%d\n", num_level, model_id->template_cfg.num_levels);
     if (num_level <= model_id->template_cfg.num_levels)
     {
+        const double scale = static_cast<double>(1 << std::max(0, num_level));
+        const double origin_x = model_id->template_cfg.origin_mode == T_T::ORIGIN_DOMAIN_CENTROID
+            ? model_id->template_cfg.origin_x / scale
+            : (model_id->template_cfg.image_width / scale) * 0.5;
+        const double origin_y = model_id->template_cfg.origin_mode == T_T::ORIGIN_DOMAIN_CENTROID
+            ? model_id->template_cfg.origin_y / scale
+            : (model_id->template_cfg.image_height / scale) * 0.5;
         for (int i = 0; i < model_id->templates[num_level]->shape_angle[0]->shape_point.size(); i++)
         {
             cv::Point2d point_one(
-                model_id->template_cfg.image_width / 2 + model_id->templates[num_level]->shape_angle[0]->shape_point[i].
-                x,
-                model_id->template_cfg.image_height / 2 + model_id->templates[num_level]->shape_angle[0]->shape_point[i]
-                .y);
+                origin_x + model_id->templates[num_level]->shape_angle[0]->shape_point[i].x,
+                origin_y + model_id->templates[num_level]->shape_angle[0]->shape_point[i].y);
             result_points.push_back(point_one);
         }
     }
@@ -1561,10 +1699,15 @@ bool CreateTemplate::drawPyramidFeatures(const cv::Mat& template_image,
         const auto& shape_info = model_id->templates[level];
         if (shape_info && !shape_info->shape_angle.empty() && shape_info->shape_angle[0])
         {
+            const double scale = static_cast<double>(1 << level);
+            const double origin_x = model_id->template_cfg.origin_mode == T_T::ORIGIN_DOMAIN_CENTROID
+                ? model_id->template_cfg.origin_x / scale : tile.cols * 0.5;
+            const double origin_y = model_id->template_cfg.origin_mode == T_T::ORIGIN_DOMAIN_CENTROID
+                ? model_id->template_cfg.origin_y / scale : tile.rows * 0.5;
             for (const auto& feature : shape_info->shape_angle[0]->shape_point)
             {
-                const cv::Point point(cvRound(tile.cols * 0.5 + feature.x),
-                                      cvRound(tile.rows * 0.5 + feature.y));
+                const cv::Point point(cvRound(origin_x + feature.x),
+                                      cvRound(origin_y + feature.y));
                 if (static_cast<unsigned>(point.x) < static_cast<unsigned>(tile.cols) &&
                     static_cast<unsigned>(point.y) < static_cast<unsigned>(tile.rows))
                 {

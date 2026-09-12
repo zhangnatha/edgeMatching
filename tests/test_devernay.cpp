@@ -6,10 +6,6 @@
 #include <limits>
 #include <vector>
 
-#ifndef SHAPE_MATCH_EDGE_METHOD_DEVERNAY
-#define SHAPE_MATCH_EDGE_METHOD_DEVERNAY 0
-#endif
-
 namespace
 {
 cv::Mat makeSlantedEdge()
@@ -53,16 +49,12 @@ cv::Mat makeCircleEdge()
 
 int main()
 {
-#if !SHAPE_MATCH_EDGE_METHOD_DEVERNAY
-    // This executable is present in all builds so the test topology remains
-    // stable; the backend-specific assertions apply only to DEVERNAY builds.
-    return 0;
-#else
     const cv::Mat image = makeSlantedEdge();
     const cv::Mat mask(image.size(), CV_8UC1, cv::Scalar(255));
     auto model = std::make_shared<T_T::Template>();
     SM_V1::CreateTemplate creator;
-    if (!creator.createTemplate(image, mask, 0, 0, 0, 1.0, false, 5, 20, model) ||
+    if (!creator.createTemplate(image, mask, 0, 0, 0, 1.0, false, 5, 20, model,
+                                T_T::EDGE_DEVERNAY) ||
         !model || model->templates.empty() || !model->templates[0] ||
         model->templates[0]->shape_angle.empty()) return 1;
 
@@ -138,7 +130,7 @@ int main()
     const cv::Mat circleMask(circle.size(), CV_8UC1, cv::Scalar(255));
     auto circleModel = std::make_shared<T_T::Template>();
     if (!creator.createTemplate(circle, circleMask, 0, 0, 0, 1.0, false, 5, 20,
-                                circleModel) || !circleModel || circleModel->templates.empty() ||
+                                circleModel, T_T::EDGE_DEVERNAY) || !circleModel || circleModel->templates.empty() ||
         !circleModel->templates[0] || circleModel->templates[0]->shape_angle.empty()) return 8;
     const auto& circlePoints = circleModel->templates[0]->shape_angle[0]->shape_point;
     if (circlePoints.size() < 30) return 9;
@@ -166,6 +158,40 @@ int main()
     std::sort(circleInteger.begin(), circleInteger.end());
     if (!(circleLocalized[circleLocalized.size() / 2] <
           circleInteger[circleInteger.size() / 2] - 0.01)) return 12;
+
+    // A reduced pyramid must retain disconnected small hole contours, not
+    // only the strongest outer boundary.  This exercises the weak-component
+    // hysteresis recovery used by the Devernay backend.
+    cv::Mat fourHole(128, 128, CV_8UC1, cv::Scalar(20));
+    cv::rectangle(fourHole, cv::Rect(16, 16, 96, 96), cv::Scalar(220), cv::FILLED);
+    const std::vector<cv::Point> holeCenters{{32, 32}, {96, 32}, {96, 96}, {32, 96}};
+    for (const cv::Point& center : holeCenters)
+        cv::circle(fourHole, center, 8, cv::Scalar(20), cv::FILLED);
+    const cv::Mat fourHoleMask(fourHole.size(), CV_8UC1, cv::Scalar(255));
+    const T_T::EdgeMethod coarseMethods[] = {
+        T_T::EDGE_CANNY_PIXEL, T_T::EDGE_CURRENT, T_T::EDGE_DEVERNAY};
+    for (const T_T::EdgeMethod method : coarseMethods) {
+        auto fourHoleModel = std::make_shared<T_T::Template>();
+        if (!creator.createTemplate(fourHole, fourHoleMask, 2, 0, 0, 1.0, false, 5, 100,
+                                    fourHoleModel, method) ||
+            !fourHoleModel || fourHoleModel->templates.size() < 3 ||
+            fourHoleModel->templates[2]->shape_angle.empty()) return 13;
+        const auto& coarsePoints = fourHoleModel->templates[2]->shape_angle[0]->shape_point;
+        int retainedHoles = 0;
+        for (const cv::Point& center : holeCenters) {
+            const cv::Point2d coarseCenter(center.x / 4.0, center.y / 4.0);
+            bool found = false;
+            for (const auto& point : coarsePoints) {
+                const double x = point.x + 16.0;
+                const double y = point.y + 16.0;
+                if (std::hypot(x - coarseCenter.x, y - coarseCenter.y) <= 3.0) {
+                    found = true;
+                    break;
+                }
+            }
+            if (found) ++retainedHoles;
+        }
+        if (retainedHoles < 4) return 14;
+    }
     return 0;
-#endif
 }

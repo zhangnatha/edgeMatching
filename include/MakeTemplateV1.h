@@ -39,7 +39,9 @@ namespace SM_V1
          */
         bool createTemplate(cv::Mat temp, cv::Mat mask, int num_levels, int angle_start, int angle_end,
                             double angle_step, bool create_otsu, int min_contrast,
-                            int max_contrast, T_T::Template::Ptr model_id);
+                            int max_contrast, T_T::Template::Ptr model_id,
+                            T_T::EdgeMethod edge_method = T_T::EDGE_CURRENT,
+                            T_T::TemplateOriginMode origin_mode = T_T::ORIGIN_IMAGE_CENTER);
 
         /**
          * @brief 将模板保存为 JSON 文件
@@ -145,5 +147,10 @@ namespace SM_V1
          */
         std::vector<T_T::TemplateFeatures> _canny(const cv::Mat& image, const cv::Mat& mask,
                                                   int min_contrast, int max_contrast);
+        T_T::EdgeMethod edge_method_ = T_T::EDGE_CURRENT;
+        // Origin used while extracting each pyramid level.  The default path
+        // is set to the current image centre for legacy model compatibility.
+        double origin_x_ = 0.0;
+        double origin_y_ = 0.0;
     };
 } // namespace SM_V1

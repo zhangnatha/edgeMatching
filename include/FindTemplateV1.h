@@ -5,14 +5,30 @@
 
 #include <opencv2/opencv.hpp>
 
+#if (defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)) && \
+    (defined(__GNUC__) || defined(__clang__))
+#define SM_AVX2_TARGET __attribute__((target("avx2")))
+#else
+#define SM_AVX2_TARGET
+#endif
+
 namespace SM_V1
 {
+    /**
+     * All searchTemplate overloads retain the historical parameter name
+     * angle_extent for source/ABI compatibility. Its value is an inclusive
+     * absolute stop angle, matching CreateTemplate::angle_end and the CLI
+     * --angle-end option. A caller with a span must convert it explicitly:
+     * angle_end = angle_start + angle_extent.
+     */
     /**
      * @brief 模板匹配搜索类，用于在图像中查找已训练的模板。
      */
     class SearchTemplate
     {
     public:
+        /** True when this binary can safely execute its AVX2 fast path. */
+        static bool isSimdAvailable();
         /**
          * @brief 构造函数
          */
@@ -30,7 +46,7 @@ namespace SM_V1
          * @param s_mask_image 输入掩模图像
          * @param model_id 模板指针
          * @param angle_start 搜索起始角度
-         * @param angle_extent 搜索角度范围
+         * @param angle_extent 兼容旧名称；实际语义是绝对终止角（inclusive），不是角度跨度
          * @param min_score 匹配的最小得分阈值
          * @param num_matches 最大匹配数量
          * @param max_overlap 允许的最大重叠度
@@ -57,7 +73,7 @@ namespace SM_V1
          * @param roi 限定的ROI区域
          * @param temp 模板指针
          * @param angle_start 搜索起始角度
-         * @param angle_extent 搜索角度范围
+         * @param angle_extent 兼容旧名称；实际语义是绝对终止角（inclusive），不是角度跨度
          * @param min_score 匹配的最小得分阈值
          * @param num_matches 最大匹配数量
          * @param max_overlap 允许的最大重叠度
@@ -208,7 +224,7 @@ namespace SM_V1
         /**
          * @brief 提取特征（梯度信息）
          */
-        void _getFeature(cv::Mat search_image, cv::Mat mask_image, int width, int height,
+        SM_AVX2_TARGET void _getFeature(cv::Mat search_image, cv::Mat mask_image, int width, int height,
         std::vector<float>& p_buf_gradX, std::vector<float>& p_buf_gradY,
         std::vector<float>& p_buf_magnitude, bool useSIMD);
 
@@ -223,7 +239,7 @@ namespace SM_V1
         /**
          * @brief 精匹配
          */
-        bool _fineMatching(cv::Mat search_image, cv::Mat mask_image, T_T::ShapeInfo::Ptr shape_info_vec, int py_levels,
+        SM_AVX2_TARGET bool _fineMatching(cv::Mat search_image, cv::Mat mask_image, T_T::ShapeInfo::Ptr shape_info_vec, int py_levels,
                            int width, int height, float min_score,
                            float greediness, T_T::SearchCfg search_region, T_T::MatchResult* result_list, bool useSIMD);
 
@@ -267,6 +283,7 @@ namespace SM_V1
         int search_min_contrast_ = 0; /**< 搜索图中央差分梯度幅值阈值 */
         I_I::Metric metric_ = I_I::USE_POLARITY; /**< 梯度极性度量 */
         bool variable_visibility_ = false; /**< 用户掩模或部分可见搜索 */
+        bool use_simd_ = false; /**< 请求的 SIMD 运行时开关 */
         std::mutex search_mutex_; /**< 保护单实例的搜索期间配置 */
     };
 } // namespace SM_V1

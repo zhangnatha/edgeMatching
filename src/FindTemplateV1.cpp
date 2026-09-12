@@ -6,11 +6,12 @@
 #include <fstream>
 #include <set>
 
-#ifndef SHAPE_MATCH_ENABLE_SIMD
-#define SHAPE_MATCH_ENABLE_SIMD 0
-#endif
-#if SHAPE_MATCH_ENABLE_SIMD
+#if (defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)) && \
+    (defined(__GNUC__) || defined(__clang__))
+#define SM_HAS_AVX2_INTRINSICS 1
 #include <immintrin.h>
+#else
+#define SM_HAS_AVX2_INTRINSICS 0
 #endif
 
 using namespace SM_V1;
@@ -21,10 +22,18 @@ using namespace SM_V1;
 #ifndef SHAPE_MATCH_VISUALIZE_FINE
 #define SHAPE_MATCH_VISUALIZE_FINE 0
 #endif
-#ifndef SHAPE_MATCH_ENABLE_SUBPIXEL
-#define SHAPE_MATCH_ENABLE_SUBPIXEL 0
-#endif
 #define COSTTIME_SHOW 1 // 耗时统计，用于算法优化观测
+
+namespace {
+bool avx2Supported()
+{
+#if SM_HAS_AVX2_INTRINSICS && (defined(__GNUC__) || defined(__clang__))
+    return __builtin_cpu_supports("avx2");
+#else
+    return false;
+#endif
+}
+}
 
 namespace
 {
@@ -166,6 +175,11 @@ SearchTemplate::SearchTemplate()
 }
 SearchTemplate::~SearchTemplate() = default;
 
+bool SearchTemplate::isSimdAvailable()
+{
+    return avx2Supported();
+}
+
 // 将输入长度转换为最接近的2的幂
 int SearchTemplate::_convertLength(int length_src)
 {
@@ -238,6 +252,15 @@ bool SearchTemplate::_maxOverlap(const cv::RotatedRect rect1, const cv::RotatedR
 
 std::vector<T_T::MatchResult> SearchTemplate::_filterNearCandidates(const std::vector<T_T::MatchResult>& input)
 {
+    // A coarse pyramid peak is quantised both spatially and angularly.  Do
+    // not collapse a genuinely different orientation into the strongest
+    // nearby peak: a symmetric/partially visible object can produce two
+    // valid modes (most notably a 180-degree reversal).  Keep a small number
+    // of angular clusters per coarse spatial neighbourhood; the final L0
+    // support/NMS pass remains responsible for selecting one physical match.
+    constexpr double kSpatialRadius = 6.0;
+    constexpr double kAngularSeparation = 45.0;
+    constexpr int kMaxAngularModes = 8;
     std::vector<T_T::MatchResult> candidates = input;
     std::sort(candidates.begin(), candidates.end(), [](const T_T::MatchResult& lhs, const T_T::MatchResult& rhs)
     {
@@ -246,22 +269,18 @@ std::vector<T_T::MatchResult> SearchTemplate::_filterNearCandidates(const std::v
     std::vector<T_T::MatchResult> result;
     for (const auto& c : candidates)
     {
-        // At one coarse spatial peak retain the strongest orientation and, at
-        // most, its strongest substantially different orientation.  The
-        // second hypothesis is needed for occluded 180-degree ambiguities;
-        // bounding it to two avoids multiplying the fine-search cost.
         int nearbyModes = 0;
         bool sameAngularMode = false;
         for (const auto& r : result)
         {
-            if (std::abs(r.pose.x - c.pose.x) < 5 && std::abs(r.pose.y - c.pose.y) < 5)
+            if (std::hypot(r.pose.x - c.pose.x, r.pose.y - c.pose.y) <= kSpatialRadius)
             {
                 ++nearbyModes;
-                if (angleDistance(r.pose.angle, c.pose.angle) < 90.0)
+                if (angleDistance(r.pose.angle, c.pose.angle) < kAngularSeparation)
                     sameAngularMode = true;
             }
         }
-        if (nearbyModes == 0 || (nearbyModes == 1 && !sameAngularMode))
+        if (nearbyModes == 0 || (!sameAngularMode && nearbyModes < kMaxAngularModes))
             result.push_back(c);
     }
     //按照得分从高到低进行排序
@@ -306,6 +325,24 @@ std::vector<T_T::MatchResult> SearchTemplate::_filterMaxOverLapCandidates(
                             legacyBoxForResult(r.result, model, pose_angle_is_output), max_ovelap);
             if (sameCenter || supportOverlap || boxOverlap)
             {
+                // At L0, two opposite-angle hypotheses can describe the same
+                // partially visible object.  Score alone may prefer the
+                // polarity-consistent false mode because the true mode has
+                // more of its support clipped.  Use the measured support
+                // coverage as a tie-breaker for this specific angular case;
+                // complete, single-mode matches retain the score ordering.
+                if (sameCenter && angleDistance(current.result.pose.angle,
+                                                 r.result.pose.angle) >= 90.0)
+                {
+                    const double currentCoverage = std::max(0.0, std::min(1.0, current.result.matched_ratio));
+                    const double keptCoverage = std::max(0.0, std::min(1.0, r.result.matched_ratio));
+                    const double currentSupportQuality = current.result.score * currentCoverage;
+                    const double keptSupportQuality = r.result.score * keptCoverage;
+                    if (currentSupportQuality > keptSupportQuality * 1.01)
+                    {
+                        r = std::move(current);
+                    }
+                }
                 //当结果位置相近时，竞选出一个结果保存
                 overlapFlag = true;
                 break;
@@ -341,7 +378,7 @@ void SearchTemplate::_getFeature(
 
     uint8_t* SearchImage = static_cast<uint8_t*>(search_image.data);
     _gaussianFilter(SearchImage, pInput, width, height,
-                    SHAPE_MATCH_ENABLE_SIMD != 0);
+                    useSIMD && avx2Supported());
 
     // 待测图像的掩模图
     uint8_t* maskdata = static_cast<uint8_t*>(mask_image.data);
@@ -349,7 +386,7 @@ void SearchTemplate::_getFeature(
     p_buf_magnitude.assign(bufferSize, 0.0f);
 
     // 提取待测图像的梯度信息
-#if SHAPE_MATCH_ENABLE_SIMD
+#if SM_HAS_AVX2_INTRINSICS
     if (useSIMD)
     {
         const __m256  vZero   = _mm256_setzero_ps();
@@ -494,9 +531,9 @@ void SearchTemplate::_getFeature(
     free(pInput);
 }
 
-#if SHAPE_MATCH_ENABLE_SIMD
+#if SM_HAS_AVX2_INTRINSICS
 // 水平求和函数 __m256
-static inline float hsum_ps_avx(__m256 v) {
+SM_AVX2_TARGET static inline float hsum_ps_avx(__m256 v) {
     __m128 lo = _mm256_castps256_ps128(v);
     __m128 hi = _mm256_extractf128_ps(v, 1);
     lo = _mm_add_ps(lo, hi);
@@ -536,7 +573,7 @@ bool SearchTemplate::_fineMatching(
 
     // 获取每个像素的梯度信息：dx/dy
     _getFeature(search_image, mask_image, width, height, pBufGradX_new, pBufGradY_new,
-                pBufMagnitude_new, SHAPE_MATCH_ENABLE_SIMD != 0);
+                pBufMagnitude_new, useSIMD && avx2Supported());
 
     cv::Mat validMask, validIntegral;
     if (variable_visibility_)
@@ -671,7 +708,7 @@ bool SearchTemplate::_fineMatching(
                 bool rejectedByGreediness = false;
                 const bool fixedDenominator = rectangleIsVisible(
                     i + min_dx, j + min_dy, i + max_dx, j + max_dy);
-#if SHAPE_MATCH_ENABLE_SIMD
+#if SM_HAS_AVX2_INTRINSICS
                 const bool fastSIMD = useSIMD && fixedDenominator &&
                                       search_min_contrast_ == 0 &&
                                       metric_ == I_I::USE_POLARITY;
@@ -846,7 +883,7 @@ void SearchTemplate::_coarseMatching(
 
     // 提取sobel梯度信息
     _getFeature(search_image, mask_image, width, height, pBufGradX, pBufGradY,
-                pBufMagnitude, SHAPE_MATCH_ENABLE_SIMD != 0);
+                pBufMagnitude, use_simd_ && avx2Supported());
 
     cv::Mat validMask, validIntegral;
     if (variable_visibility_)
@@ -1061,16 +1098,32 @@ void SearchTemplate::_coarseMatching(
             return result1.score > result2.score;
         });
     if (!resultsfilter.empty()) { maxscore = resultsfilter[0].score; }
-    // 根据分数比值，将小分数的情况排除
-    // 挑选分数较大的一些匹配结果
-    for (auto& rn : resultsfilter)
+    // 根据分数比值，将明显较弱的同一模态排除。但空间相近且角度
+    // 显著不同的候选必须继续向 L0 传播；粗层的量化/遮挡可能使正确
+    // 的 180 度模态暂时得分较低，不能在这里用单一全局分数截断。
+    // Opposite orientations of an asymmetric object can shift the coarse
+    // correlation peak by several pixels.  Allow the angular companion mode
+    // to survive that quantisation; L0 support NMS resolves the final pose.
+    constexpr double kSpatialRadius = 16.0;
+    constexpr double kAngularSeparation = 45.0;
+    for (const auto& rn : resultsfilter)
     {
-        double proportion = 0;
-        proportion = maxscore / rn.score;
-        // |---------------|---->maxscore
-        //          L1        L2
-        // L2/(L1+L2) = 1/1.25 = 4/5
-        if (proportion < 1.5) { resultList.push_back(rn); }
+        const double proportion = rn.score > 0.0 ? maxscore / rn.score :
+                                   std::numeric_limits<double>::infinity();
+        bool keep = proportion < 2.5;
+        if (!keep)
+        {
+            for (const auto& kept : resultList)
+            {
+                if (std::hypot(kept.pose.x - rn.pose.x, kept.pose.y - rn.pose.y) <= kSpatialRadius &&
+                    angleDistance(kept.pose.angle, rn.pose.angle) >= kAngularSeparation)
+                {
+                    keep = true;
+                    break;
+                }
+            }
+        }
+        if (keep) resultList.push_back(rn);
     }
 #else
     std::sort(
@@ -1199,7 +1252,7 @@ bool SearchTemplate::_coarse2FineMatching(
     T_T::MatchResult currentLevelResult;
     if (!_fineMatching(cropImage, cropMask, pInfoPy, py_levels, cropImgW, cropImgH,
                        min_score, greediness, SearchRegion, &currentLevelResult,
-                       SHAPE_MATCH_ENABLE_SIMD != 0))
+                       use_simd_ && avx2Supported()))
         return false;
     *result_list_low = currentLevelResult;
 #if SHAPE_MATCH_VISUALIZE_FINE
@@ -1283,12 +1336,10 @@ bool SearchTemplate::searchTemplate(
 
 namespace
 {
-#if SHAPE_MATCH_ENABLE_SUBPIXEL
 void refineSubpixelPosition(T_T::MatchResult& result, const T_T::ShapeInfo::Ptr& shapeInfo,
                             const cv::Mat& image, const cv::Mat& mask,
                             double minVisibleRatio, int minContrast, I_I::Metric metric,
                             double angleStep, double angleStart, double angleEnd);
-#endif
 }
 
 // 单尺度匹配内核，由公开重载统一调用。
@@ -1307,6 +1358,9 @@ bool SearchTemplate::_searchTemplateSingleScale(
     bool sort_by_y,
     std::vector<T_T::MatchResult>& result_list)
 {
+    // Compatibility note: angle_extent is historically named, but is an
+    // absolute inclusive stop angle throughout this implementation. The CLI
+    // --angle-end and TemplateCfg::angle_end use the same convention.
 #if COSTTIME_SHOW
     auto start_prepare = std::chrono::high_resolution_clock::now();
 #endif
@@ -1594,7 +1648,6 @@ bool SearchTemplate::_searchTemplateSingleScale(
         // Refine only candidates that survived NMS. Performing six bilinear score
         // evaluations for every coarse candidate would erase the benefit of the
         // integer/SIMD search path.
-#if SHAPE_MATCH_ENABLE_SUBPIXEL
         if (subpixel_refine_)
         for (auto& candidate : findResult)
         {
@@ -1608,7 +1661,6 @@ bool SearchTemplate::_searchTemplateSingleScale(
             candidate.pose.x -= left;
             candidate.pose.y -= top;
         }
-#endif
 
         //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
         //+++++++++++++++++++++++++待测图像目标点排序筛选剔除+++++++++++++++++++++++++++++
@@ -1728,7 +1780,6 @@ bool validScaleCfg(const T_T::ScaleSearchCfg& cfg)
             cfg.metric == I_I::IGNORE_GLOBAL_POLARITY);
 }
 
-#if SHAPE_MATCH_ENABLE_SUBPIXEL
 bool bilinearNormalizedGradient(const cv::Mat& image, double x, double y,
                                 float& gradientX, float& gradientY, float& rawMagnitude,
                                 int minContrast)
@@ -1887,7 +1938,6 @@ void refineSubpixelPosition(T_T::MatchResult& result, const T_T::ShapeInfo::Ptr&
     }
     else result = original;
 }
-#endif
 }
 
 bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image,
@@ -1953,13 +2003,12 @@ bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi
     const int oldSearchMinContrast = search_min_contrast_;
     const I_I::Metric oldMetric = metric_;
     const bool oldVariableVisibility = variable_visibility_;
+    const bool oldUseSimd = use_simd_;
     min_visible_ratio_ = scale_cfg.min_visible_ratio;
-    subpixel_refine_ =
-#if SHAPE_MATCH_ENABLE_SUBPIXEL
-        scale_cfg.subpixel_refine;
-#else
-        false;
-#endif
+    subpixel_refine_ = scale_cfg.subpixel_refine;
+    use_simd_ = scale_cfg.use_simd && avx2Supported();
+    if (scale_cfg.use_simd && !use_simd_)
+        std::cerr << "SIMD requested but AVX2 is unavailable; using scalar fallback.\n";
     search_min_contrast_ = scale_cfg.min_contrast;
     metric_ = static_cast<I_I::Metric>(scale_cfg.metric);
     variable_visibility_ = scale_cfg.min_visible_ratio < 1.0 || !s_mask_image.empty();
@@ -1969,6 +2018,7 @@ bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi
         search_min_contrast_ = oldSearchMinContrast;
         metric_ = oldMetric;
         variable_visibility_ = oldVariableVisibility;
+        use_simd_ = oldUseSimd;
     };
     auto stateGuard = makeScopeExit(restore);
     return _searchTemplatePrepared(prepared, roi, model_id, angle_start,
@@ -2026,16 +2076,31 @@ bool SearchTemplate::_searchTemplatePrepared(
         bool suppressed = false;
         const T_T::Template::Ptr candidateModel = model_id;
         const SupportPixels candidateSupport = buildSupportPixels(candidate, candidateModel, true);
-        for (const auto& accepted : kept)
+        for (auto& accepted : kept)
         {
+            const bool sameCenter = std::hypot(candidate.pose.x - accepted.result.pose.x,
+                                               candidate.pose.y - accepted.result.pose.y) <= 5.0;
             const bool supportOverlap = !candidateSupport.empty() && !accepted.support.empty() &&
                 supportIoU(candidateSupport, accepted.support) > max_overlap;
             const bool highConfidence = std::min(candidate.score, accepted.result.score) >= 0.90;
             const bool boxOverlap = !highConfidence &&
                 _maxOverlap(legacyBoxForResult(candidate, candidateModel, true),
                             legacyBoxForResult(accepted.result, candidateModel, true), max_overlap);
-            if (supportOverlap || boxOverlap)
-            { suppressed = true; break; }
+            if (sameCenter || supportOverlap || boxOverlap)
+            {
+                if (sameCenter && angleDistance(candidate.pose.angle,
+                                                accepted.result.pose.angle) >= 90.0)
+                {
+                    const double candidateQuality = candidate.score *
+                        std::max(0.0, std::min(1.0, candidate.matched_ratio));
+                    const double acceptedQuality = accepted.result.score *
+                        std::max(0.0, std::min(1.0, accepted.result.matched_ratio));
+                    if (candidateQuality > acceptedQuality * 1.01)
+                        accepted = CandidateSupport{candidate, candidateSupport};
+                }
+                suppressed = true;
+                break;
+            }
         }
         if (!suppressed) kept.push_back(CandidateSupport{candidate, candidateSupport});
     }
@@ -2043,7 +2108,6 @@ bool SearchTemplate::_searchTemplatePrepared(
     // HALCON-style interpolation in the scale dimension. The expensive image
     // searches remain discrete; only NMS survivors are associated with the same
     // spatial peak at the immediately adjacent scales and fitted quadratically.
-#if SHAPE_MATCH_ENABLE_SUBPIXEL
     if (scale_cfg.subpixel_refine &&
         scale_cfg.scale_max - scale_cfg.scale_min >= 2.0 * scale_cfg.scale_step - epsilon)
     {
@@ -2086,7 +2150,6 @@ bool SearchTemplate::_searchTemplatePrepared(
                 scale_cfg.scale_max, candidate.scale + delta * scale_cfg.scale_step));
         }
     }
-#endif
     if (num_matches >= 0 && kept.size() > static_cast<size_t>(num_matches))
         kept.resize(num_matches);
     std::vector<T_T::MatchResult> keptResults;
@@ -2143,13 +2206,12 @@ bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi
     const int oldSearchMinContrast = search_min_contrast_;
     const I_I::Metric oldMetric = metric_;
     const bool oldVariableVisibility = variable_visibility_;
+    const bool oldUseSimd = use_simd_;
     min_visible_ratio_ = scale_cfg.min_visible_ratio;
-    subpixel_refine_ =
-#if SHAPE_MATCH_ENABLE_SUBPIXEL
-        scale_cfg.subpixel_refine;
-#else
-        false;
-#endif
+    subpixel_refine_ = scale_cfg.subpixel_refine;
+    use_simd_ = scale_cfg.use_simd && avx2Supported();
+    if (scale_cfg.use_simd && !use_simd_)
+        std::cerr << "SIMD requested but AVX2 is unavailable; using scalar fallback.\n";
     search_min_contrast_ = scale_cfg.min_contrast;
     metric_ = static_cast<I_I::Metric>(scale_cfg.metric);
     variable_visibility_ = scale_cfg.min_visible_ratio < 1.0 || !s_mask_image.empty();
@@ -2159,6 +2221,7 @@ bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi
         search_min_contrast_ = oldSearchMinContrast;
         metric_ = oldMetric;
         variable_visibility_ = oldVariableVisibility;
+        use_simd_ = oldUseSimd;
     };
     auto stateGuard = makeScopeExit(restore);
 
@@ -2229,36 +2292,33 @@ bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi
 //初始化各层金字塔的模板信息
 void initialShapeModelPyd(T_T::ShapeInfo::Ptr shape_info_vec, int angle_start, int angle_stop, double angle_step)
 {
-    //初始化 Vector:shape_angle，内含智能指针
-    int angle_num = 0;
-    for (double iAngle = angle_start; iAngle < angle_stop; iAngle += angle_step)
-    {
-        angle_num++;
+    // Canonical zero is retained at index 0 for the legacy matcher. Generate
+    // the requested interval using an integer count, then append the exact
+    // endpoint so floating-point accumulation cannot miss or overshoot it.
+    shape_info_vec->shape_angle.clear();
+    const double epsilon = std::max(1e-9, std::abs(angle_step) * 1e-9);
+    auto append = [&](double angle) {
+        for (const auto& existing : shape_info_vec->shape_angle)
+            if (std::abs(existing->angle - angle) <= epsilon) return;
+        auto item = std::make_shared<T_T::ShapeAngle>();
+        item->angle = angle;
+        shape_info_vec->shape_angle.push_back(item);
+    };
+    append(0.0);
+    if (angle_start == angle_stop) {
+        append(static_cast<double>(angle_start));
+        return;
     }
-    for (int i = 0; i < angle_num + 2; i++)
-    {
-        shape_info_vec->shape_angle.push_back(std::make_shared<T_T::ShapeAngle>());
+    const double span = static_cast<double>(angle_stop) - angle_start;
+    const int count = std::max(0, static_cast<int>(std::floor(span / angle_step + epsilon)));
+    for (int k = 0; k < count; ++k) {
+        const double angle = angle_start + static_cast<double>(k) * angle_step;
+        if (angle < angle_stop - epsilon) append(angle);
     }
-
-    int angleNum = 0;
-    //如果起始角度与终止角度相同（-180~-180）
-    if (angle_start == angle_stop)
-    {
-        angleNum = 2; //角度变化只有1个，加上模板为0角度，则是2个
-        shape_info_vec->shape_angle[0]->angle = 0;
-        shape_info_vec->shape_angle[1]->angle = angle_start;
-    }
-    //如果起始角度与终止角度不同（-180~180）
-    else
-    {
-        shape_info_vec->shape_angle[0]->angle = 0;
-        for (double iAngle = angle_start; iAngle < angle_stop; iAngle += angle_step)
-        {
-            shape_info_vec->shape_angle[angleNum + 1]->angle = iAngle; //[]内为1-360
-            angleNum++;
-        }
-        shape_info_vec->shape_angle[angleNum + 1]->angle = angle_stop;
-    }
+    // Avoid endpoint duplication when the final regular sample lands there.
+    if (shape_info_vec->shape_angle.empty() ||
+        std::abs(shape_info_vec->shape_angle.back()->angle - angle_stop) > epsilon)
+        append(static_cast<double>(angle_stop));
 }
 
 // 初始化模板资源
@@ -2350,11 +2410,33 @@ T_T::Template::Ptr SearchTemplate::loadModelFileFromJson(std::string path)
         temp->template_cfg.create_otsu = true;
     temp->template_cfg.min_contrast = fn_shapeMatchPre["min_constract"];
     temp->template_cfg.max_contrast = fn_shapeMatchPre["max_constract"];
+    const cv::FileNode edgeMethodNode = fn_shapeMatchPre["edge_method"];
+    if (!edgeMethodNode.empty()) {
+        const int method = static_cast<int>(edgeMethodNode);
+        temp->template_cfg.edge_method = method == static_cast<int>(T_T::EDGE_DEVERNAY)
+            ? T_T::EDGE_DEVERNAY
+            : (method == static_cast<int>(T_T::EDGE_CANNY_PIXEL)
+                ? T_T::EDGE_CANNY_PIXEL : T_T::EDGE_CURRENT);
+    }
     temp->template_cfg.num_levels = fn_shapeMatchPre["num_levels"];
     temp->template_cfg.id = fn_shapeMatchPre["id"];
     // temp->template_cfg.is_inited = fn_shapeMatchPre["is_inited"];
     image_width_ = temp->template_cfg.image_width = fn_shapeMatchPre["image_width"];
     image_height_ = temp->template_cfg.image_height = fn_shapeMatchPre["image_height"];
+    const cv::FileNode originModeNode = fn_shapeMatchPre["origin_mode"];
+    const cv::FileNode originXNode = fn_shapeMatchPre["origin_x"];
+    const cv::FileNode originYNode = fn_shapeMatchPre["origin_y"];
+    if (!originModeNode.empty() && !originXNode.empty() && !originYNode.empty()) {
+        const int mode = static_cast<int>(originModeNode);
+        if (mode == static_cast<int>(T_T::ORIGIN_DOMAIN_CENTROID))
+            temp->template_cfg.origin_mode = T_T::ORIGIN_DOMAIN_CENTROID;
+        temp->template_cfg.origin_x = static_cast<double>(originXNode);
+        temp->template_cfg.origin_y = static_cast<double>(originYNode);
+    } else {
+        temp->template_cfg.origin_mode = T_T::ORIGIN_IMAGE_CENTER;
+        temp->template_cfg.origin_x = temp->template_cfg.image_width * 0.5;
+        temp->template_cfg.origin_y = temp->template_cfg.image_height * 0.5;
+    }
 
     // 读取模板的特征数据
     cv::FileNode tps_fn = fn_shapeMatchPre["templates"];
@@ -2565,6 +2647,42 @@ T_T::Template::Ptr SearchTemplate::loadModelFileFromBinary(std::string path)
         }
 
         temp->templates.push_back(temp_shapeinfo);
+    }
+
+    // Optional append-only metadata. Legacy binaries end at the feature
+    // payload and therefore cleanly default to CURRENT.
+    uint32_t metadataMagic = 0;
+    uint32_t metadataVersion = 0;
+    uint8_t edgeMethod = 0;
+    uint8_t originMode = 0;
+    uint8_t reserved[2] = {0, 0};
+    ifs.read(reinterpret_cast<char*>(&metadataMagic), sizeof(metadataMagic));
+    if (ifs && metadataMagic == 0x534D4554u) {
+        ifs.read(reinterpret_cast<char*>(&metadataVersion), sizeof(metadataVersion));
+        ifs.read(reinterpret_cast<char*>(&edgeMethod), sizeof(edgeMethod));
+        ifs.read(reinterpret_cast<char*>(&originMode), sizeof(originMode));
+        ifs.read(reinterpret_cast<char*>(reserved), sizeof(reserved));
+        if (ifs && (metadataVersion == 1u || metadataVersion == 2u)) {
+            if (edgeMethod == static_cast<uint8_t>(T_T::EDGE_DEVERNAY))
+                temp->template_cfg.edge_method = T_T::EDGE_DEVERNAY;
+            else if (edgeMethod == static_cast<uint8_t>(T_T::EDGE_CANNY_PIXEL))
+                temp->template_cfg.edge_method = T_T::EDGE_CANNY_PIXEL;
+            if (metadataVersion >= 2u) {
+                double originX = 0.0, originY = 0.0;
+                ifs.read(reinterpret_cast<char*>(&originX), sizeof(originX));
+                ifs.read(reinterpret_cast<char*>(&originY), sizeof(originY));
+                if (ifs && originMode == static_cast<uint8_t>(T_T::ORIGIN_DOMAIN_CENTROID)) {
+                    temp->template_cfg.origin_mode = T_T::ORIGIN_DOMAIN_CENTROID;
+                    temp->template_cfg.origin_x = originX;
+                    temp->template_cfg.origin_y = originY;
+                }
+            }
+        }
+    }
+
+    if (temp->template_cfg.origin_mode == T_T::ORIGIN_IMAGE_CENTER) {
+        temp->template_cfg.origin_x = temp->template_cfg.image_width * 0.5;
+        temp->template_cfg.origin_y = temp->template_cfg.image_height * 0.5;
     }
 
     ifs.close(); // 关闭文件流

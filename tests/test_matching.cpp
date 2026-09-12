@@ -6,17 +6,11 @@
 #include "FindTemplateV1.h"
 #undef private
 #include "MakeTemplateV1.h"
+#include "ModelIdNormalization.h"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <vector>
-
-#ifndef SHAPE_MATCH_ENABLE_SUBPIXEL
-#define SHAPE_MATCH_ENABLE_SUBPIXEL 0
-#endif
-#ifndef SHAPE_MATCH_EDGE_METHOD_DEVERNAY
-#define SHAPE_MATCH_EDGE_METHOD_DEVERNAY 0
-#endif
 
 namespace {
 cv::Mat makePattern(bool alternate) {
@@ -34,12 +28,13 @@ cv::Mat makePattern(bool alternate) {
     return image;
 }
 
-T_T::Template::Ptr train(const cv::Mat& image, int id) {
+T_T::Template::Ptr train(const cv::Mat& image, int id,
+                         T_T::EdgeMethod method = T_T::EDGE_CURRENT) {
     auto model = std::make_shared<T_T::Template>();
     model->template_cfg.id = id;
     cv::Mat mask(image.size(), CV_8UC1, cv::Scalar(255));
     SM_V1::CreateTemplate creator;
-    if (!creator.createTemplate(image, mask, 0, 0, 0, 1.0, false, 15, 60, model)) return nullptr;
+    if (!creator.createTemplate(image, mask, 0, 0, 0, 1.0, false, 15, 60, model, method)) return nullptr;
     return model;
 }
 
@@ -118,13 +113,22 @@ int main() {
     const cv::Mat patternB = makePattern(true);
     auto modelA = train(patternA, 101);
     auto modelB = train(patternB, 202);
-    if (!modelA || !modelB) return 1;
+    auto modelDevernay = train(patternA, 203, T_T::EDGE_DEVERNAY);
+    auto modelPixel = train(patternA, 204, T_T::EDGE_CANNY_PIXEL);
+    if (!modelA || !modelB || !modelDevernay || !modelPixel) return 1;
     if (modelA->template_cfg.id != 101 || modelB->template_cfg.id != 202) return 2;
-#if SHAPE_MATCH_ENABLE_SUBPIXEL || SHAPE_MATCH_EDGE_METHOD_DEVERNAY
     if (!hasFractionalFeature(modelA) || !hasFractionalFeature(modelB)) return 14;
-#else
-    if (hasFractionalFeature(modelA) || hasFractionalFeature(modelB)) return 41;
-#endif
+    if (modelA->template_cfg.edge_method != T_T::EDGE_CURRENT ||
+        modelDevernay->template_cfg.edge_method != T_T::EDGE_DEVERNAY ||
+        !hasFractionalFeature(modelDevernay)) return 15;
+    if (modelPixel->template_cfg.edge_method != T_T::EDGE_CANNY_PIXEL ||
+        hasFractionalFeature(modelPixel)) return 16;
+    const std::string pixelModelPath = "/tmp/edge_matching_pixel.json";
+    SM_V1::CreateTemplate pixelSaver;
+    if (!pixelSaver.saveModelFile2Json(modelPixel, pixelModelPath)) return 50;
+    SM_V1::SearchTemplate pixelLoader;
+    const T_T::Template::Ptr loadedPixel = pixelLoader.loadModelFileFromJson(pixelModelPath);
+    if (!loadedPixel || loadedPixel->template_cfg.edge_method != T_T::EDGE_CANNY_PIXEL) return 51;
     if (modelA->templates.size() != 1 || modelA->templates[0]->shape_angle.size() != 1) return 2;
 
     // Exercise the hybrid NMS policy directly.  The synthetic model has two
@@ -226,6 +230,12 @@ int main() {
             std::abs(scalarGradY[i] - simdGradY[i]) > 2e-5f ||
             std::abs(scalarMagnitude[i] - simdMagnitude[i]) > 2e-5f) return 43;
     }
+    std::vector<T_T::MatchResult> requestedSimdResults;
+    if (!matcher.searchTemplate(patternA, cv::Mat(), modelA, 0, 0, 0.30f, 1,
+                                0.4f, 0, 0.8f, true,
+                                T_T::ScaleSearchCfg(1.0, 1.0, 1.0, 1.0, false, 0,
+                                                    I_I::USE_POLARITY, true),
+                                requestedSimdResults) || requestedSimdResults.empty()) return 44;
     // The original five-argument constructor remains source-compatible.
     const T_T::ScaleSearchCfg legacyCfg(1.0, 1.0, 1.0, 1.0, false);
     const cv::Mat compatibilityScene = sceneWith(patternA, 1.0, 145, 90);
@@ -323,7 +333,6 @@ int main() {
     // Subpixel-only scale, position, and angle assertions are compiled in and
     // exercised only by the feature-enabled build.  The disabled build still
     // verifies that requesting the API flag has deterministic legacy behavior.
-#if SHAPE_MATCH_ENABLE_SUBPIXEL
     const double targetScale = 1.03;
     const cv::Mat scaledScene = sceneWith(patternA, targetScale, 145, 90);
     std::vector<T_T::MatchResult> discreteScaleResults, refinedScaleResults;
@@ -394,23 +403,6 @@ int main() {
         std::abs(refinedAngleResults[0].pose.angle -
                  std::round(refinedAngleResults[0].pose.angle)) < 0.02 ||
         refinedAngleResults[0].score + 1e-6 < discreteAngleResults[0].score) return 29;
-#else
-    std::vector<T_T::MatchResult> disabledLegacyResults, disabledRequestedResults;
-    const T_T::ScaleSearchCfg disabledCfg(1.0, 1.0, 1.0, 1.0, true);
-    if (!matcher.searchTemplate(compatibilityScene, cv::Mat(), modelA, 0, 0, 0.30f, 1,
-                                0.4f, 0, 0.8f, true,
-                                T_T::ScaleSearchCfg(1.0, 1.0, 1.0, 1.0, false),
-                                disabledLegacyResults) ||
-        !matcher.searchTemplate(compatibilityScene, cv::Mat(), modelA, 0, 0, 0.30f, 1,
-                                0.4f, 0, 0.8f, true, disabledCfg,
-                                disabledRequestedResults) ||
-        disabledLegacyResults.size() != disabledRequestedResults.size() ||
-        disabledLegacyResults.empty() ||
-        disabledLegacyResults[0].pose.x != disabledRequestedResults[0].pose.x ||
-        disabledLegacyResults[0].pose.y != disabledRequestedResults[0].pose.y ||
-        disabledLegacyResults[0].pose.angle != disabledRequestedResults[0].pose.angle ||
-        disabledLegacyResults[0].scale != disabledRequestedResults[0].scale) return 33;
-#endif
 
     const cv::Mat partial = sceneWith(patternA, 1.0, 285, 90);
     std::vector<T_T::MatchResult> partialResults;
@@ -506,5 +498,37 @@ int main() {
     cv::cvtColor(partial, color, cv::COLOR_GRAY2BGR);
     matcher.drawMatchResults(color, partialResults, models);
     if (color.empty() || color.size() != partial.size()) return 9;
+
+    // UI loads colour files for display but must search the same grayscale
+    // pixels as the CLI.  The core entry point must therefore be invariant to
+    // an equivalent BGR wrapper.
+    cv::Mat multiSceneColor;
+    cv::cvtColor(multiScene, multiSceneColor, cv::COLOR_GRAY2BGR);
+    std::vector<T_T::MatchResult> grayInputResults, colorInputResults;
+    if (!matcher.searchTemplate(multiScene, cv::Mat(), models, 0, 0, 0.55f, 10,
+                                0.4f, 0, 0.8f, true, T_T::ScaleSearchCfg(), grayInputResults) ||
+        !matcher.searchTemplate(multiSceneColor, cv::Mat(), models, 0, 0, 0.55f, 10,
+                                0.4f, 0, 0.8f, true, T_T::ScaleSearchCfg(), colorInputResults) ||
+        !sameResults(grayInputResults, colorInputResults)) return 39;
+
+    // Duplicate/invalid IDs are normalized deterministically on the loaded
+    // in-memory copies, matching the UI/CLI policy without touching files.
+    auto duplicateA = std::make_shared<T_T::Template>(*modelA);
+    auto duplicateB = std::make_shared<T_T::Template>(*modelB);
+    duplicateA->template_cfg.id = 501;
+    duplicateB->template_cfg.id = 501;
+    std::vector<T_T::Template::Ptr> duplicateModels{duplicateA, duplicateB};
+    std::vector<SM_V1::ModelIdAssignment> assignments;
+    std::string normalizationError;
+    if (!SM_V1::normalizeTemplateIds(duplicateModels, assignments, &normalizationError) ||
+        assignments.size() != 2 || assignments[0].original_id != 501 ||
+        assignments[0].runtime_id != 501 || assignments[1].original_id != 501 ||
+        assignments[1].runtime_id != 1 || duplicateModels[0]->template_cfg.id != 501 ||
+        duplicateModels[1]->template_cfg.id != 1) return 40;
+    std::vector<T_T::MatchResult> normalizedResults;
+    if (!matcher.searchTemplate(multiScene, cv::Mat(), duplicateModels, 0, 0, 0.55f, 10,
+                                0.4f, 0, 0.8f, true, T_T::ScaleSearchCfg(), normalizedResults) ||
+        !nearResult(normalizedResults, 501, 1.0, 75, 90, 8.0) ||
+        !nearResult(normalizedResults, 1, 1.0, 220, 90, 8.0)) return 41;
     return 0;
 }

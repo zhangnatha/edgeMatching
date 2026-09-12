@@ -17,6 +17,26 @@ namespace I_I
 
 namespace T_T
 {
+    // The historical model coordinate system is image-centre based.  New
+    // models may opt into the valid-domain centroid, while old JSON/BIN files
+    // remain IMAGE_CENTER when this field is absent.
+    enum TemplateOriginMode
+    {
+        ORIGIN_IMAGE_CENTER = 0,
+        ORIGIN_DOMAIN_CENTROID = 1
+    };
+
+    enum EdgeMethod
+    {
+        CURRENT = 0,
+        DEVERNAY = 1,
+        // Appended for binary/JSON compatibility: legacy values remain stable.
+        CANNY_PIXEL = 2,
+        EDGE_CURRENT = CURRENT,
+        EDGE_DEVERNAY = DEVERNAY,
+        EDGE_CANNY_PIXEL = CANNY_PIXEL
+    };
+
     //模板制作输入参数
     struct TemplateCfg
     {
@@ -31,13 +51,18 @@ namespace T_T
         int image_width;   //原模板图像宽度
         int image_height;  //原模板图像高度
         bool is_inited;    //初始化标志
+        EdgeMethod edge_method; //边缘特征提取后端
+        TemplateOriginMode origin_mode; //模板坐标原点策略
+        double origin_x; //原图像坐标中的模板原点 X
+        double origin_y; //原图像坐标中的模板原点 Y
 
         // createTemplate reads id before it overwrites the remaining fields,
         // so a newly allocated configuration must be fully initialized.
         TemplateCfg()
             : num_levels(0), angle_start(0), angle_end(0), angle_step(1.0),
               create_otsu(false), max_contrast(0), min_contrast(0), id(1),
-              image_width(0), image_height(0), is_inited(false)
+              image_width(0), image_height(0), is_inited(false), edge_method(EDGE_CURRENT),
+              origin_mode(ORIGIN_IMAGE_CENTER), origin_x(0.0), origin_y(0.0)
         {
         }
     };
@@ -132,14 +157,15 @@ namespace T_T
         bool subpixel_refine;
         int min_contrast;
         int metric;
+        bool use_simd;
 
         ScaleSearchCfg(double scale_min_ = 1.0, double scale_max_ = 1.0,
                        double scale_step_ = 1.0, double min_visible_ratio_ = 1.0,
                        bool subpixel_refine_ = false, int min_contrast_ = 0,
-                       int metric_ = I_I::USE_POLARITY)
+                       int metric_ = I_I::USE_POLARITY, bool use_simd_ = false)
             : scale_min(scale_min_), scale_max(scale_max_), scale_step(scale_step_),
               min_visible_ratio(min_visible_ratio_), subpixel_refine(subpixel_refine_),
-              min_contrast(min_contrast_), metric(metric_)
+              min_contrast(min_contrast_), metric(metric_), use_simd(use_simd_)
         {
         }
     };

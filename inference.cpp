@@ -1,5 +1,6 @@
 #include "FindTemplateV1.h"
 #include "Timer.h"
+#include "ModelIdNormalization.h"
 #include <opencv2/opencv.hpp>
 #include <cmath>
 #include <cstdlib>
@@ -9,11 +10,6 @@
 #include <sstream>
 #include <string>
 #include <vector>
-#include <set>
-
-#ifndef SHAPE_MATCH_ENABLE_SUBPIXEL
-#define SHAPE_MATCH_ENABLE_SUBPIXEL 0
-#endif
 
 namespace {
 std::string getCpuInfo()
@@ -78,7 +74,7 @@ void usage(const char* p) {
               << " [--scale-min N] [--scale-max N] [--scale-step N]"
               << " [--min-visible-ratio N] [--min-contrast N]"
               << " [--metric use-polarity|ignore-global-polarity|ignore-local-polarity]"
-              << " [--subpixel] [--output FILE]\n";
+              << " [--subpixel] [--simd] [--output FILE]\n";
 }
 bool number(int& i, int argc, const char* argv[], double& out) {
     if (i + 1 >= argc) return false;
@@ -276,7 +272,9 @@ bool saveResultsToJson(const std::string& jsonPath,
     out << "    \"min_visible_ratio\": " << std::fixed << std::setprecision(4) << scaleCfg.min_visible_ratio << ",\n";
     out << "    \"min_contrast\": " << scaleCfg.min_contrast << ",\n";
     out << "    \"metric\": \"" << metricStr << "\",\n";
-    out << "    \"subpixel_refine\": " << (scaleCfg.subpixel_refine ? "true" : "false") << "\n";
+    out << "    \"subpixel_refine\": " << (scaleCfg.subpixel_refine ? "true" : "false") << ",\n";
+    out << "    \"simd_requested\": " << (scaleCfg.use_simd ? "true" : "false") << ",\n";
+    out << "    \"simd_actual\": " << (scaleCfg.use_simd && SM_V1::SearchTemplate::isSimdAvailable() ? "true" : "false") << "\n";
     out << "  },\n";
 
     out << "  \"performance\": {\n";
@@ -360,12 +358,9 @@ int main(int argc, const char* argv[]) {
             else if (value == "ignore-global-polarity") scaleCfg.metric = I_I::IGNORE_GLOBAL_POLARITY;
             else { std::cerr << "Invalid --metric value: " << value << '\n'; return 2; }
         } else if (arg == "--subpixel") {
-#if SHAPE_MATCH_ENABLE_SUBPIXEL
             scaleCfg.subpixel_refine = true;
-#else
-            std::cerr << "--subpixel is unavailable: rebuild with -DSHAPE_MATCH_ENABLE_SUBPIXEL=ON.\n";
-            return 2;
-#endif
+        } else if (arg == "--simd") {
+            scaleCfg.use_simd = true;
         } else if (arg == "--output") {
             if (++i >= argc) { usage(argv[0]); return 2; }
             outputPath = argv[i];
@@ -394,21 +389,24 @@ int main(int argc, const char* argv[]) {
 
     SM_V1::SearchTemplate matcher;
     std::vector<T_T::Template::Ptr> models;
-    std::set<int> usedIds;
-    int nextId = 1;
     for (const auto& path : modelPaths) {
-        auto model = matcher.loadModelFileFromJson(path);
+        const bool binary = path.size() >= 4 &&
+            (path.substr(path.size() - 4) == ".bin" || path.substr(path.size() - 4) == ".BIN");
+        auto model = binary ? matcher.loadModelFileFromBinary(path)
+                            : matcher.loadModelFileFromJson(path);
         if (!model) { std::cerr << "Failed to load model: " << path << '\n'; return 1; }
-        int id = model->template_cfg.id;
-        if (id <= 0 || usedIds.count(id) != 0) {
-            while (usedIds.count(nextId) != 0) ++nextId;
-            id = nextId++;
-            model->template_cfg.id = id;
-            std::cout << "Assigned unique template ID " << id << " to " << path << '\n';
-        }
-        usedIds.insert(id);
         models.push_back(model);
     }
+    std::vector<SM_V1::ModelIdAssignment> assignments;
+    std::string normalizationError;
+    if (!SM_V1::normalizeTemplateIds(models, assignments, &normalizationError)) {
+        std::cerr << "Template ID normalization failed: " << normalizationError << '\n';
+        return 1;
+    }
+    for (size_t i = 0; i < assignments.size(); ++i)
+        std::cout << "Template ID mapping: original=" << assignments[i].original_id
+                  << " runtime=" << assignments[i].runtime_id
+                  << " file=" << modelPaths[i] << '\n';
 
     Timer timer(TimerMethod::HighResolutionClock);
     std::vector<T_T::MatchResult> results;

@@ -60,7 +60,7 @@
 - **部分可见目标**：目标被图像边界截断时仍可匹配。评分只使用位于图像内的特征点，并由 `min_visible_ratio` 控制最低可见比例；绘制结果会自动裁剪到图像范围。
 - **多尺度匹配**：无需重新训练模板即可搜索离散尺度范围，例如 `0.8` 至 `1.2`。
 - **多模板匹配**：一次调用可加载多个模型文件；结果包含 `template_id`、位置、角度、尺度、得分和可见比例。模型 ID 必须为唯一正数。
-- **清晰的结果可视化与数据导出**：待测图内只在指定包围框角绘制随目标旋转的 `#序号` 小标签；左侧扩展纯色信息栏，动态显示分辨率、CPU 硬件型号、纯推理耗时（Cost Time）、检出数量及各目标的详细位姿数据（`T_ID`、`Score`、`Scale`、`Center_X,Y`、`Angle`）。每个检出目标基于黄金分割色相序列赋予互不相同的高对比色彩，并自动保存同名结构化 JSON 结果数据文件。
+- **清晰的结果可视化与数据导出**：核心库仍提供传统 OpenCV 结果绘制接口；Qt5 客户端则保留原始输入图，在 `QGraphicsView` 前景层以抗锯齿矢量绘制 HALCON 风格绿色亚像素轮廓、青色旋转框和姿态箭头，不将覆盖烧录进推理图像。客户端支持多模板按 `template_id` 选择模型、运行时参数设置及滚轮锚点缩放，位姿数据继续写入日志。
 - **逐点匹配质量**：模板轮廓点按梯度方向余弦相似度逐像素点精准着色，绿色为强匹配、黄色为中等匹配、红色为弱匹配或缺失边缘；金字塔各层特征及匹配目标特征均采用单像素高保真渲染。
 - **模板金字塔展开图**：训练时可将真实灰度金字塔及每层 canonical 特征保存为一张从左上到右下展开的图像，画布随层数和图像尺寸自动扩展。
 
@@ -106,6 +106,8 @@
 └── train.cpp # 训练程序源码
 ```
 
+Qt5 客户端源码和构建脚本位于 [UI/](UI/)，详见 [UI/README.md](UI/README.md)。顶层 CMake 默认同时构建核心程序和 Qt5 客户端；无 Qt 环境时可显式关闭客户端。
+
 ## 环境要求
 
 请在 `Linux` 环境安装：
@@ -127,53 +129,19 @@ https://wwyn.lanzout.com/iB7Mb34k8kwd
 ## CMake 构建
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
+# 无 Qt 环境时：cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_QT_CLIENT=OFF
 ```
 
-亚像素精修由编译选项 `SHAPE_MATCH_ENABLE_SUBPIXEL` 控制，默认 `OFF`，可在构建时按需开启：
+Qt5 客户端目标为 `build/UI/shape_match_qt`，仓库会自动优先使用 `3rdparty/qt5`。
 
-```bash
-cmake -S . -B build-subpixel -DSHAPE_MATCH_ENABLE_SUBPIXEL=ON -DBUILD_TESTING=ON
-cmake --build build-subpixel --parallel
-```
-
-关闭时，库会忽略 `ScaleSearchCfg::subpixel_refine=true` 并保持离散匹配行为；命令行
-`--subpixel` 会明确拒绝并提示使用上述选项重新编译。开启后才编译亚像素位置、角度和尺度精修代码。
-
-SIMD 加速由编译选项 `SHAPE_MATCH_ENABLE_SIMD` 控制，默认 `OFF`。关闭时使用可移植的标量实现，
-不会加入 `-march=native`、`-mavx*` 等 x86 指令集选项，也不会编译 x86 intrinsic；因此可在 ARM 等
-非 x86 平台构建。x86/x86_64 平台可按需开启 AVX2 加速：
-
-```bash
-cmake -S . -B build-simd -DSHAPE_MATCH_ENABLE_SIMD=ON -DBUILD_TESTING=ON
-cmake --build build-simd --parallel
-ctest --test-dir build-simd --output-on-failure
-```
-
-开启 SIMD 时，CMake 会检查目标处理器为 x86/x86_64 且编译器支持 `-mavx2`；不满足条件会在配置阶段
-明确失败。SIMD 与 OpenMP 独立控制，OpenMP 的现有行为不受此选项影响。
-
-边缘特征后端由 `SHAPE_MATCH_EDGE_METHOD` 编译选项选择，默认值为 `CURRENT`。`CURRENT` 保持原有
-的整数像素 Canny 风格特征提取；`DEVERNAY` 使用独立实现的连续梯度方向 NMS、双阈值滞后连接和
-法线方向二次拟合，模板特征坐标可以是亚像素值。两个库必须使用相同的后端配置：
-
-```bash
-# 默认/兼容模式
-cmake -S . -B build-current \
-  -DSHAPE_MATCH_EDGE_METHOD=CURRENT -DSHAPE_MATCH_ENABLE_SIMD=OFF -DBUILD_TESTING=ON
-cmake --build build-current --parallel
-
-# Devernay 亚像素边缘特征模式（可与 SUBPIXEL 精修开关独立设置）
-cmake -S . -B build-devernay \
-  -DSHAPE_MATCH_EDGE_METHOD=DEVERNAY -DSHAPE_MATCH_ENABLE_SIMD=OFF -DBUILD_TESTING=ON
-cmake --build build-devernay --parallel
-ctest --test-dir build-devernay --output-on-failure
-```
-
-边缘后端写入模板模型的特征数据，切换 `CURRENT`/`DEVERNAY` 后必须使用相同后端重新制作并保存
-模板，不能混用已有模型。`SHAPE_MATCH_ENABLE_SUBPIXEL` 只控制匹配时的位姿精修；DEVERNAY 的
-模板边缘坐标本身始终保留亚像素结果。
+亚像素精修始终编译，运行时由 `ScaleSearchCfg::subpixel_refine` 或 CLI `--subpixel` 控制。
+AVX2 使用 x86 GCC/Clang 函数级目标隔离和 CPU 能力检测，运行时由 `ScaleSearchCfg::use_simd`
+或 CLI `--simd` 请求；不支持 AVX2 时自动回退标量实现，ARM 等非 x86 平台直接使用标量路径。
+边缘特征后端是训练 API 的 `T_T::EdgeMethod` 参数（`CURRENT` 或 `DEVERNAY`），默认 CURRENT，
+并写入模型 JSON；旧 JSON/BIN 缺少该字段时按 CURRENT 加载。二进制元数据追加在旧 payload 尾部，
+不改变旧格式字段布局。
 
 Devernay/Canny 流程仅参考以下公开资料的算法原理，仓库未复制第三方实现代码：
 
@@ -196,10 +164,13 @@ Devernay/Canny 流程仅参考以下公开资料的算法原理，仓库未复�
 完整命令行格式如下：
 
 ```bash
-./train [template_image] [--id N] [--output FILE] [--pyramid-output FILE]
+./train [template_image] [--id N] [--edge-method pixel|current|devernay]
+           [--output FILE] [--pyramid-output FILE]
 ```
 
-不传参数时，默认读取 `../assert/m1.png`，生成 `./model.json`，模板 ID 为 `1`。
+不传参数时默认读取 `../assert/m1.png`；不传 `--output` 时，模型按模板输入文件名生成到 `train` 可执行文件同级目录，例如
+`m9_1.bmp` 生成 `m9_1.json`。`--edge-method pixel` 使用 Canny 像素级整数特征，
+`current`（默认）保留 Canny + 抛物线亚像素定位，`devernay` 使用 Devernay 亚像素边缘。
 `--pyramid-output` 为可选项；指定后会额外保存模板特征金字塔图。图中绿色点是各层实际参与匹配的 canonical 特征，最粗层位于左上角，原始分辨率层位于右下角。
 
 ### 匹配过程可视化编译开关
@@ -471,8 +442,7 @@ JSON 模型只保存 canonical 特征。加载 JSON 或二进制模型时，匹�
 
 `--metric use-polarity` 使用有符号梯度方向；`ignore-global-polarity` 允许整个候选统一反色；`ignore-local-polarity` 则逐点忽略极性。后两者适合亮暗关系会变化的目标，但约束依次更宽松。
 
-编译时开启 `SHAPE_MATCH_ENABLE_SUBPIXEL=ON` 后，`--subpixel` 或
-`ScaleSearchCfg::subpixel_refine=true` 才会在 NMS 后执行亚像素 `x/y/angle/scale` 精修：先在相邻角度得分上做抛物线拟合，再在精修角度下优化位置并联合复评；多尺度搜索还会对相邻三个尺度的同一空间峰做二次插值。内部目标下降时回退离散姿态。对外 `score` 保留离散匹配得分，不与内部双线性目标混用。精修每次最多均匀采样 512 个模板特征。默认未编译、未启用。
+`--subpixel` 或 `ScaleSearchCfg::subpixel_refine=true` 会在 NMS 后执行亚像素 `x/y/angle/scale` 精修：先在相邻角度得分上做抛物线拟合，再在精修角度下优化位置并联合复评；多尺度搜索还会对相邻三个尺度的同一空间峰做二次插值。内部目标下降时回退离散姿态。对外 `score` 保留离散匹配得分，不与内部双线性目标混用。精修每次最多均匀采样 512 个模板特征，默认运行时关闭。
 
 例如，对 `src8.bmp` 输出亚像素位置：
 
@@ -527,8 +497,7 @@ g++ -std=c++11 -O3 -fopenmp -fPIC -o libFindTemplateV1.so -shared src/FindTempla
 -lopencv_core -lopencv_imgproc -lopencv_highgui -lopencv_imgcodecs -lopencv_calib3d -pthread
 ```
 
-手动编译时如需在 x86/x86_64 平台启用 SIMD，将两个库的编译命令都追加
-`-DSHAPE_MATCH_ENABLE_SIMD=1 -mavx2`；其他平台保持上述标量命令。
+是否请求 SIMD 由运行时参数控制，不需要添加架构专用全局编译参数。
 
 ## 性能参考
 
