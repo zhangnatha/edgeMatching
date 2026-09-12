@@ -5,6 +5,56 @@
 基于梯度方向余弦相似度的工业边缘形状模板匹配。项目包含 C++ 核心库、
 `train`/`inference` 命令行程序，以及支持中英文的 Qt5 客户端。
 
+## 效果展示与核心数学原理
+
+### 1. 匹配效果展示
+
+| 多模板并发匹配（`src1_2_3`） | 边界截断与部分可见（`src8`） |
+| :---: | :---: |
+| ![多模板匹配](assert/.md/result_src1_2_3.png) | ![部分遮挡截断匹配](assert/.md/result_src8.png) |
+| **同时匹配 3 种模板（共检出 33 个目标）** | **边界截断目标高精度检出（共检出 7 个目标）** |
+
+| 局部极性反转（`src9_1`） | 密集排布与旋转定位（`src9_2`） | 弱对比度与杂乱背景（`src9_6`） |
+| :---: | :---: | :---: |
+| ![局部极性反转](assert/.md/result_src9_1.png) | ![密集排布](assert/.md/result_src9_2.png) | ![弱对比度](assert/.md/result_src9_6.png) |
+| **`src9_1`：极性反转与光照变化** | **`src9_2`：多角度密集工件精准识别** | **`src9_6`：弱纹理背景下的稳定匹配** |
+
+*(更多测试场景及可视化结果请参见 [docs/template_matching_algorithm.md](docs/template_matching_algorithm.md) 与 [assert 全量回归矩阵](#assert-全量回归矩阵))*
+
+### 2. 核心数学公式说明
+
+算法使用模板轮廓点的归一化梯度方向与待测图梯度方向之间的余弦相似度进行匹配：
+
+1. **整体余弦相似度度量（Similarity）**：
+   衡量变换后模板轮廓各特征点与待测图对应点之间方向的一致性：
+
+   ![整体余弦相似度公式](assert/.md/formula1.svg)
+
+   $$
+   \text{Similarity} = \cos(\theta_i) = \frac{\sum_{i=1}^n (T_i \cdot S_i)}{\sqrt{\sum_{i=1}^n \|T_i\|^2} \cdot \sqrt{\sum_{i=1}^n \|S_i\|^2}}
+   $$
+   
+   
+2. **特征点单位梯度向量归一化（Normalized Gradient Vectors）**：
+   消除局部光照绝对强度的影响，仅保留几何方向特征：
+
+   ![单位梯度向量公式](assert/.md/formula2.svg)
+
+   $$
+   \hat{T}_i = \frac{T_i}{\|T_i\|} = \left[ \frac{T_{i,x}}{\sqrt{T_{i,x}^2 + T_{i,y}^2}}, \frac{T_{i,y}}{\sqrt{T_{i,x}^2 + T_{i,y}^2}} \right], \quad \hat{S}_i = \frac{S_i}{\|S_i\|} = \left[ \frac{S_{i,x}}{\sqrt{S_{i,x}^2 + S_{i,y}^2}}, \frac{S_{i,y}}{\sqrt{S_{i,x}^2 + S_{i,y}^2}} \right]
+   $$
+   
+   
+3. **单点方向余弦 / 点积展开（Dot Product Expansion）**：
+   二维梯度的内积分解为水平与垂直两个正交分量的乘积累加，支持 AVX2 SIMD 高度向量化加速：
+
+   ![单点梯度点积展开公式](assert/.md/formula3.svg)
+
+   $$
+   \cos(\theta_i) = \hat{T}_i \cdot \hat{S}_i = \left( \frac{T_{i,x}}{\sqrt{T_{i,x}^2 + T_{i,y}^2}} \cdot \frac{S_{i,x}}{\sqrt{S_{i,x}^2 + S_{i,y}^2}} \right) + \left( \frac{T_{i,y}}{\sqrt{T_{i,x}^2 + T_{i,y}^2}} \cdot \frac{S_{i,y}}{\sqrt{S_{i,x}^2 + S_{i,y}^2}} \right)
+   $$
+   
+
 ## 功能
 
 - 多层金字塔、旋转、尺度和多模板搜索。

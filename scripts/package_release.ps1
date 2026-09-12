@@ -70,6 +70,12 @@ try {
     New-Item -ItemType Directory -Force -Path (Join-Path $stage 'docs') | Out-Null
     Copy-Item (Join-Path $repoDir 'README.md'), (Join-Path $repoDir 'LICENSE') $stage -Force
     Copy-Item (Join-Path $repoDir 'docs\template_matching_algorithm.md') (Join-Path $stage 'docs') -Force
+    $assertMdDir = Join-Path $repoDir 'assert\.md'
+    if (Test-Path $assertMdDir) {
+        $stageAssertMd = Join-Path $stage 'assert\.md'
+        New-Item -ItemType Directory -Force -Path $stageAssertMd | Out-Null
+        Copy-Item (Join-Path $assertMdDir '*') $stageAssertMd -Recurse -Force
+    }
     Set-Content -Path (Join-Path $stage 'RELEASE.txt') -Value @(
         'edgeMatching release package', "Built from: $repoDir", "Qt client: $qtEnabled"
     ) -Encoding UTF8

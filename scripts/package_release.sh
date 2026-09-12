@@ -116,6 +116,10 @@ fi
 mkdir -p "$stage/docs"
 cp -a "$repo_dir/README.md" "$repo_dir/LICENSE" "$stage/"
 cp -a "$repo_dir/docs/template_matching_algorithm.md" "$stage/docs/"
+if [[ -d "$repo_dir/assert/.md" ]]; then
+    mkdir -p "$stage/assert/.md"
+    cp -a "$repo_dir/assert/.md/." "$stage/assert/.md/"
+fi
 printf 'edgeMatching release package\nBuilt from: %s\nQt client: %s\n' "$repo_dir" "$qt_enabled" \
     > "$stage/RELEASE.txt"
 
