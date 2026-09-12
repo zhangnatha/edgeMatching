@@ -121,6 +121,26 @@ powershell -ExecutionPolicy Bypass -File .\scripts\package_release.ps1 -OutputDi
 脚本会在失败时退出，不删除源码或已有构建目录；详细参数见脚本的 `--help` 或
 `Get-Help` 输出。
 
+Linux 打包依赖 `cmake`、`patchelf` 和 `zip` 工具。针对不同运行环境的依赖准备方式如下：
+
+- **安装了 Conda（Anaconda / Miniconda）**：
+  - 若 Conda 环境中已带有 `patchelf`，`package_release.sh` 脚本已内置对 `~/anaconda3/bin`、`~/miniconda3/bin` 等常见路径的自动探测，可直接执行脚本；也可在终端先执行 `conda activate`。
+  - 若 Conda 环境中缺少该工具，无需 root / `sudo` 权限即可直接在当前环境中安装：
+    ```bash
+    conda install -c conda-forge patchelf zip
+    ```
+- **未安装 Conda（纯系统环境）**：
+  - **有 sudo 权限**：直接通过系统包管理器安装：
+    ```bash
+    sudo apt install -y patchelf zip
+    ```
+  - **无 sudo 权限（普通用户）**：可直接下载 GitHub 发布的独立静态二进制（单文件免编译安装）并加入 PATH：
+    ```bash
+    mkdir -p ~/.local/bin
+    curl -sSL https://github.com/NixOS/patchelf/releases/download/0.18.0/patchelf-0.18.0-x86_64.tar.gz | tar -xz -C ~/.local/bin patchelf
+    export PATH="$HOME/.local/bin:$PATH"
+    ```
+
 匹配过程可视化是独立的 CMake 选项，默认关闭：
 
 ```bash

@@ -29,7 +29,20 @@ done
 no_qt="${no_qt:-0}"
 [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || { echo "--jobs must be a positive integer" >&2; exit 2; }
 command -v cmake >/dev/null || { echo "Missing required command: cmake" >&2; exit 1; }
-command -v patchelf >/dev/null || { echo "Missing required command: patchelf" >&2; exit 1; }
+# 自动在常见环境路径（如 anaconda、miniconda）中查找 patchelf
+if ! command -v patchelf >/dev/null 2>&1; then
+    for candidate in "$HOME/anaconda3/bin" "$HOME/miniconda3/bin" /opt/conda/bin; do
+        if [[ -x "$candidate/patchelf" ]]; then
+            export PATH="$candidate:$PATH"
+            break
+        fi
+    done
+fi
+command -v patchelf >/dev/null 2>&1 || {
+    echo "Missing required command: patchelf" >&2
+    echo "Please install patchelf (e.g. 'sudo apt-get install patchelf' or 'conda install patchelf') or add it to PATH." >&2
+    exit 1
+}
 
 # 防止误删源码、构建目录或根目录。
 output_dir="$(realpath -m -- "$output_dir")"
@@ -72,16 +85,19 @@ for opencv_module in core imgproc imgcodecs highgui calib3d; do
     copy_matches "$repo_dir/3rdparty/opencv/lib" "libopencv_${opencv_module}.so*"
 done
 if [[ "$qt_enabled" == ON ]]; then
-    copy_matches "$repo_dir/3rdparty/qt5/lib" 'libQt5Core.so*'
-    copy_matches "$repo_dir/3rdparty/qt5/lib" 'libQt5Gui.so*'
-    copy_matches "$repo_dir/3rdparty/qt5/lib" 'libQt5Widgets.so*'
-    copy_matches "$repo_dir/3rdparty/qt5/lib" 'libQt5Concurrent.so*'
+    copy_matches "$repo_dir/3rdparty/qt5/lib" 'libQt5*.so*'
     mkdir -p "$stage/plugins"
-    for plugin_dir in platforms imageformats; do
+    for plugin_dir in platforms imageformats platformthemes platforminputcontexts xcbglintegrations iconengines; do
         if [[ -d "$repo_dir/3rdparty/qt5/plugins/$plugin_dir" ]]; then
             cp -a "$repo_dir/3rdparty/qt5/plugins/$plugin_dir" "$stage/plugins/"
         fi
     done
+    cat <<'EOF' > "$stage/bin/qt.conf"
+[Paths]
+Prefix = ..
+Plugins = plugins
+Libraries = lib
+EOF
 fi
 
 # 使用相对 RPATH，使发布目录不依赖源码或构建目录。
@@ -91,6 +107,11 @@ done < <(find "$stage/bin" -maxdepth 1 -type f -perm -u+x -print0)
 while IFS= read -r -d '' library; do
     patchelf --set-rpath '$ORIGIN' "$library"
 done < <(find "$stage/lib" -maxdepth 1 -type f -name '*.so*' -print0)
+if [[ -d "$stage/plugins" ]]; then
+    while IFS= read -r -d '' plugin; do
+        patchelf --set-rpath '$ORIGIN/../../lib' "$plugin"
+    done < <(find "$stage/plugins" -type f -name '*.so*' -print0)
+fi
 
 mkdir -p "$stage/docs"
 cp -a "$repo_dir/README.md" "$repo_dir/LICENSE" "$stage/"
