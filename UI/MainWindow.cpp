@@ -74,10 +74,8 @@ QString runtimeOutputDir()
     return QCoreApplication::applicationDirPath();
 }
 
-// UI output fields historically contained paths such as UI/results/foo.json.
-// Keep absolute paths explicitly chosen by the user, but make every relative
-// artifact resolve next to the executable.  This also makes the result files
-// independent of the process working directory.
+// UI 输出字段历史上可能包含 UI/results/foo.json 等路径；保留用户明确选择的绝对路径，
+// 但将所有相对产物解析到可执行文件旁，使结果文件不依赖进程工作目录。
 QString normalizedOutputPath(const QString& candidate,
                              const QString& fallbackName,
                              const QString& defaultExtension,
@@ -307,8 +305,7 @@ void MainWindow::buildUi()
     splitter->setStretchFactor(1, 0);
     setCentralWidget(splitter);
 
-    // Keep the image view and parameter page on the same workflow.  Block the
-    // reciprocal signal to avoid a currentChanged recursion.
+    // 让图像视图和参数页保持同一工作流；阻断相互信号以避免 currentChanged 递归。
     connect(tabs_, &QTabWidget::currentChanged, this, [this](int index) {
         if (parameterTabs_ && parameterTabs_->currentIndex() != index) {
             const QSignalBlocker blocker(parameterTabs_);
@@ -474,8 +471,8 @@ void MainWindow::chooseTemplateImage()
     const QString path = QFileDialog::getOpenFileName(this, tr("选择模板图像"), root.absoluteFilePath("assert"),
                                                        tr("图像 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"));
     if (path.isEmpty()) return;
-    // Keep the source pixels for the preview.  CreateTemplate accepts 1/3/4
-    // channel 8-bit images and converts a private copy to gray internally.
+    // 保留源像素用于预览；CreateTemplate 接受 1/3/4 通道 8 位图像，并在内部将
+    // 私有副本转换为灰度。
     cv::Mat image = cv::imread(path.toStdString(), cv::IMREAD_UNCHANGED);
     if (image.empty()) { showError(tr("无法读取模板图像：%1").arg(path)); return; }
     templateImage_ = image;
@@ -505,9 +502,8 @@ void MainWindow::chooseInputImage()
     const QString path = QFileDialog::getOpenFileName(this, tr("选择推理图像"), root.absoluteFilePath("assert"),
                                                        tr("图像 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"));
     if (path.isEmpty()) return;
-    // Keep the search pixels byte-for-byte equivalent to the CLI inference
-    // path, which loads IMREAD_GRAYSCALE.  Rendering converts this copy back
-    // to BGR only when a colour result image must be written.
+    // 保证搜索像素与加载 IMREAD_GRAYSCALE 的 CLI 推理路径逐字节等价；仅在写入彩色
+    // 结果图时将该副本转换回 BGR。
     cv::Mat image = cv::imread(path.toStdString(), cv::IMREAD_GRAYSCALE);
     if (image.empty()) { showError(tr("无法读取输入图像：%1").arg(path)); return; }
     inputImage_ = image;
@@ -612,9 +608,8 @@ void MainWindow::train()
             result.model.reset();
             return result;
         }
-        // Reproduce the core pyramid dimensions (integer half-size at every
-        // pyrDown).  Keep each clone independent before handing it to Qt so
-        // no worker-thread cv::Mat storage is shared with the GUI.
+        // 重现核心金字塔尺寸（每次 pyrDown 后取整数半尺寸）；交给 Qt 前保持每个
+        // 副本独立，避免工作线程 cv::Mat 存储与 GUI 共享。
         const int configuredLayers = std::max(1, result.model->template_cfg.num_levels + 1);
         const int layerCount = std::min(configuredLayers,
                                        static_cast<int>(result.model->templates.size()));
@@ -769,9 +764,7 @@ void MainWindow::infer()
         std::vector<T_T::MatchResult> matches;
         const auto inferBegin = std::chrono::steady_clock::now();
         const bool ok = matcher.searchTemplate(image, cv::Mat(), searchRoi, models,
-                                                // The legacy public API calls this field
-                                                // angle_extent, but its implementation and
-                                                // CLI semantics use it as the absolute stop angle.
+                                                // 历史公开 API 将此字段称为 angle_extent，但实现和 CLI 语义将其作为绝对终止角。
                                                 aStart, aEnd, score, count, overlap,
                                                 levels, greed, sortY, scale, matches);
         result.elapsed_ms = std::chrono::duration<double, std::milli>(

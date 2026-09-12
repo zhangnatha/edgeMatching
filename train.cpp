@@ -1,4 +1,4 @@
-// train.cpp
+// 训练命令行程序入口。
 #include "MakeTemplateV1.h"
 #include "Timer.h"
 #include <cerrno>
@@ -131,7 +131,7 @@ int main(int argc, const char* argv[])
         std::cerr << "Failed to create template.\n";
         return 1;
     }
-    timer.record("训练模型");
+    timer.record("Template training");
 #if USE_BINARY_MODEL
     if (!trainer.saveModelFile2Binary(modelId, modelPath)) {
 #else
@@ -140,7 +140,7 @@ int main(int argc, const char* argv[])
         std::cerr << "Failed to save model: " << modelPath << '\n';
         return 1;
     }
-    timer.record("保存模型");
+    timer.record("Model saving");
 
     if (!pyramidPath.empty()) {
         cv::Mat visualization;
@@ -149,7 +149,7 @@ int main(int argc, const char* argv[])
             std::cerr << "Failed to save pyramid visualization: " << pyramidPath << '\n';
             return 1;
         }
-        timer.record("保存金字塔特征图");
+        timer.record("Pyramid preview saving");
     }
 
     timer.report();

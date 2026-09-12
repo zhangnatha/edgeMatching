@@ -72,8 +72,7 @@ QVector<ImageView::OverlayPath> buildMatchOverlays(
 
         const int width = std::max(1, model->template_cfg.image_width);
         const int height = std::max(1, model->template_cfg.image_height);
-        // ContourBuilder reconstructs connected, de-duplicated paths from the
-        // L0 canonical feature set.  Pixel values are irrelevant to it.
+        // ContourBuilder 从 L0 canonical 特征集合重建连通且去重的路径，不依赖像素值。
         const cv::Mat modelCanvas(height, width, CV_8UC1, cv::Scalar(0));
         const QPolygonF frame = rotatedFrame(result, model);
         if (frame.size() == 4) {
@@ -114,8 +113,8 @@ QVector<ImageView::OverlayPath> buildMatchOverlays(
     const cv::Mat& image, const std::vector<T_T::MatchResult>& results,
     const std::vector<T_T::Template::Ptr>& models, I_I::Metric metric)
 {
-    // Keep the established cyan frame/pose arrow, then classify the same
-    // rotated ShapeAngle points and normalized gradients as the core drawer.
+    // 保留既有青色外框和位姿箭头，再使用与核心绘制器相同的旋转 ShapeAngle 点和
+    // 归一化梯度进行分类。
     QVector<ImageView::OverlayPath> overlays = buildMatchOverlays(results, models);
     cv::Mat gray, gx, gy;
     if (!image.empty()) {

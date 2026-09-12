@@ -53,4 +53,7 @@ solution_guide_ii_b_matching.pdf
 UI/build_cache
 UI/results/*
 !UI/results/.gitkeep
+dist/
+result.json
+result.png
 dataSet_2D

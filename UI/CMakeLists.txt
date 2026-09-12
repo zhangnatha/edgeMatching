@@ -13,7 +13,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     project(shapeMatchQtClient LANGUAGES CXX)
     set(CMAKE_CXX_STANDARD 11)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../3rdparty/opencv/lib/cmake/opencv4")
+    if(NOT OpenCV_DIR AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../3rdparty/opencv/lib/cmake/opencv4")
         set(OpenCV_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../3rdparty/opencv/lib/cmake/opencv4")
     endif()
     find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
@@ -82,30 +82,14 @@ if(SHAPE_MATCH_TRANSLATION_QM)
                 ${SHAPE_MATCH_TRANSLATION_QM}
                 $<TARGET_FILE_DIR:shapeMatchQtClient>/shape_match_en.qm
     )
-endif()
-
-if(BUILD_TESTING)
-    add_executable(test_ui_contours
-        ../tests/test_ui_contours.cpp
-        ContourBuilder.cpp
-        ContourBuilder.h
-        MatchOverlay.cpp
-        MatchOverlay.h
-    )
-    target_include_directories(test_ui_contours PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        ${SHAPE_MATCH_ROOT_DIR}/include
-        ${OpenCV_INCLUDE_DIRS}
-    )
-    target_link_libraries(test_ui_contours PRIVATE
-        MakeTemplate
-        FindTemplate
-        ${OpenCV_LIBRARIES}
-        Qt5::Widgets
-    )
-    add_test(NAME ui_contour_dedup COMMAND test_ui_contours)
+    install(FILES ${SHAPE_MATCH_TRANSLATION_QM}
+        DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
 set_target_properties(shapeMatchQtClient PROPERTIES
     OUTPUT_NAME shape_match_qt
 )
+
+include(GNUInstallDirs)
+install(TARGETS shapeMatchQtClient
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

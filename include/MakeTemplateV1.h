@@ -148,8 +148,7 @@ namespace SM_V1
         std::vector<T_T::TemplateFeatures> _canny(const cv::Mat& image, const cv::Mat& mask,
                                                   int min_contrast, int max_contrast);
         T_T::EdgeMethod edge_method_ = T_T::EDGE_CURRENT;
-        // Origin used while extracting each pyramid level.  The default path
-        // is set to the current image centre for legacy model compatibility.
+        // 提取各金字塔层时使用的原点；默认设置为当前图像中心以兼容历史模型。
         double origin_x_ = 0.0;
         double origin_y_ = 0.0;
     };

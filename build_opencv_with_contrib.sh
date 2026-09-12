@@ -19,7 +19,7 @@ cleanup() {
     local exit_code=$?
     trap - EXIT
     if [[ -n "${WORK_DIR:-}" && -d "${WORK_DIR}" ]]; then
-        echo "🧹 清理临时目录 ${WORK_DIR}"
+        echo "Cleaning temporary directory ${WORK_DIR}"
         rm -rf -- "${WORK_DIR}"
     fi
     exit "${exit_code}"
@@ -28,12 +28,12 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 
 # 下载源码
-echo "📦 下载 OpenCV ${OPENCV_VERSION} ..."
+echo "Downloading OpenCV ${OPENCV_VERSION}..."
 wget -O "${WORK_DIR}/opencv.zip" \
     "https://github.com/opencv/opencv/archive/${OPENCV_VERSION}.zip"
 unzip -q "${WORK_DIR}/opencv.zip" -d "${WORK_DIR}"
 
-echo "📦 下载 opencv_contrib ${OPENCV_VERSION} ..."
+echo "Downloading opencv_contrib ${OPENCV_VERSION}..."
 wget -O "${WORK_DIR}/opencv_contrib.zip" \
     "https://github.com/opencv/opencv_contrib/archive/${OPENCV_VERSION}.zip"
 unzip -q "${WORK_DIR}/opencv_contrib.zip" -d "${WORK_DIR}"
@@ -41,7 +41,7 @@ unzip -q "${WORK_DIR}/opencv_contrib.zip" -d "${WORK_DIR}"
 # 准备构建目录
 mkdir -p "${BUILD_DIR}"
 
-echo "⚙️ 配置 CMake 编译选项..."
+echo "Configuring CMake build options..."
 cmake -S "${OPENCV_DIR}" -B "${BUILD_DIR}" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
@@ -61,10 +61,10 @@ cmake -S "${OPENCV_DIR}" -B "${BUILD_DIR}" \
   -DBUILD_EXAMPLES=OFF \
   -DBUILD_opencv_world=OFF
 
-echo "🔨 编译 OpenCV + contrib..."
+echo "Building OpenCV with contrib..."
 cmake --build "${BUILD_DIR}" --parallel "$(nproc)"
 
-echo "📥 安装到 ${INSTALL_DIR}"
+echo "Installing to ${INSTALL_DIR}"
 cmake --install "${BUILD_DIR}"
 
-echo "✅ OpenCV ${OPENCV_VERSION} + opencv_contrib 编译安装完成！"
+echo "OpenCV ${OPENCV_VERSION} with contrib was installed successfully."

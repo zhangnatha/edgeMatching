@@ -1,518 +1,314 @@
 # edgeMatching
 
-> 基于边缘梯度余弦相似度的金字塔模板匹配
+[![Ubuntu](https://img.shields.io/badge/Ubuntu-18.04%2B-E95420)](https://ubuntu.com/)[![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D6)](https://www.microsoft.com/windows)[![C%2B%2B](https://img.shields.io/badge/C%2B%2B-11-blue)](https://isocpp.org/)[![CMake](https://img.shields.io/badge/CMake-%E2%89%A53.10-064F8C)](https://cmake.org/)[![OpenCV](https://img.shields.io/badge/OpenCV-4.7.0-green)](https://opencv.org/)[![Qt](https://img.shields.io/badge/Qt-5.x-41CD52)](https://www.qt.io/)[![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 
-本项目使用 OpenCV 实现工业场景中的边缘形状模板制作与匹配，提供模板制作库、模板匹配库，以及 `train` 和 `inference` 可执行程序。
+基于梯度方向余弦相似度的工业边缘形状模板匹配。项目包含 C++ 核心库、
+`train`/`inference` 命令行程序，以及支持中英文的 Qt5 客户端。
 
-## 效果展示
+## 功能
 
-本算法针对工业级复杂场景设计，具备极高的鲁棒性、定位精度与直观的可视化交互：
+- 多层金字塔、旋转、尺度和多模板搜索。
+- Canny 像素级、Canny + 抛物线亚像素、Devernay 亚像素三种训练边缘后端。
+- 亚像素位姿精修、部分可见目标、全局/局部极性忽略、轮廓支撑带 NMS。
+- 可选 AVX2 SIMD；运行时检测 CPU，不支持时自动使用可移植标量实现。
+- Qt 客户端提供训练/推理参数页、金字塔特征预览、结果图及中英文切换。
 
-### 1. 多模板并发与边界截断目标匹配 (`src1_2_3`)
-> 单次推理联合搜索 3 个不同工件（共 33 个目标），支持处于图像左右边界处的严重截断目标识别（可见比例低至 50%）。左侧信息面板自适应展示分辨率、CPU 硬件、纯推理耗时（Cost Time）及逐目标精确位姿；每个目标采用基于黄金分割色相序列生成的互不相同色彩标识，内部边缘轮廓点按余弦相似度逐像素点精准着色（绿=强匹配、黄=可用、红=弱边缘）。
+核心算法说明见 [docs/template_matching_algorithm.md](docs/template_matching_algorithm.md)，
+Qt 专项说明见 [UI/README.md](UI/README.md)。
 
-![多模板并发与截断目标匹配](assert/.md/result_src1_2_3.png)
+## 环境与依赖
 
----
+支持平台与必需依赖：
 
-### 2. 复杂遮挡、局部极性反转与多姿态匹配 (`src9` 系列)
-> 针对工业生产中工件反光、光照反差翻转（暗底亮字/亮底暗字）及严重互相遮挡场景，使用 `ignore-local-polarity` 逐点忽略极性匹配，依然能够准确定位高重叠、低可见度的复杂工件：
+- Ubuntu 18.04 及更高版本：支持 C++11 的 GCC/Clang、CMake 3.10 或更高版本。
+- Windows 10/11：Visual Studio 2019/2022（MSVC）或 MinGW-w64、CMake 3.10 或更高版本。
+- OpenCV 4.7.0，使用 `core`、`imgproc`、`highgui`、`imgcodecs`、`calib3d`。
+  将预编译包放在 `3rdparty/opencv`，或通过 `-DOpenCV_DIR=...` 指向 OpenCV 的
+  `OpenCVConfig.cmake` 所在目录。Ubuntu 可运行 `./build_opencv_with_contrib.sh`；
+  Windows 请使用 OpenCV 官方 Windows 包或从源码用 CMake 构建。
 
-| 场景 1：`src9_2`（3模板并发，8目标混合与强遮挡） | 场景 2：`src9_4`（工件密集堆叠与部分遮挡） |
-| :---: | :---: |
-| ![src9_2](assert/.md/result_src9_2.png) | ![src9_4](assert/.md/result_src9_4.png) |
-| **场景 3：`src9_6`（重度遮挡与光照剧烈变化）** | **场景 4：`src9_8`（多角度旋转与局部反光）** |
-| ![src9_6](assert/.md/result_src9_6.png) | ![src9_8](assert/.md/result_src9_8.png) |
+可选：
 
-<details>
-<summary><b>👉 点击展开查看 src9 系列全部 13 张极性与遮挡测试图画廊</b></summary>
+- Qt5 Widgets 和 Concurrent。顶层 CMake 默认构建 Qt 客户端，并优先使用
+  `3rdparty/qt5`；Windows 可用 Qt Online Installer 安装后通过 `-DCMAKE_PREFIX_PATH=...`
+  指定。没有 Qt 时使用 `-DBUILD_QT_CLIENT=OFF`。
+- AVX2 仅在 x86 且 CPU 支持时启用；不应为 ARM 或不支持 AVX2 的平台添加
+  `-mavx2` 全局编译选项。
 
-| `src9_1` | `src9_2` |
-| :---: | :---: |
-| ![src9_1](assert/.md/result_src9_1.png) | ![src9_2](assert/.md/result_src9_2.png) |
-| `src9_3` | `src9_4` |
-| ![src9_3](assert/.md/result_src9_3.png) | ![src9_4](assert/.md/result_src9_4.png) |
-| `src9_5` | `src9_6` |
-| ![src9_5](assert/.md/result_src9_5.png) | ![src9_6](assert/.md/result_src9_6.png) |
-| `src9_7` | `src9_8` |
-| ![src9_7](assert/.md/result_src9_7.png) | ![src9_8](assert/.md/result_src9_8.png) |
-| `src9_9` | `src9_10` |
-| ![src9_9](assert/.md/result_src9_9.png) | ![src9_10](assert/.md/result_src9_10.png) |
-| `src9_11` | `src9_12` |
-| ![src9_11](assert/.md/result_src9_11.png) | ![src9_12](assert/.md/result_src9_12.png) |
-| `src9_13` | - |
-| ![src9_13](assert/.md/result_src9_13.png) | - |
-
-</details>
-
----
-
-### 3. 高重复纹理抗噪匹配 (`src8`)
-> 针对密集条纹、条形码等局部强重复结构，基于轮廓特征支撑带 IoU 进行全局最优化非极大值抑制（NMS），有效抑制局部误匹配，精准定位全图 7 处目标。
-
-![高重复纹理条纹匹配](assert/.md/result_src8.png)
-
----
-
-## 功能特性
-
-- **紧凑的 canonical 模型**：训练时每层金字塔只提取 `0°` canonical 边缘特征；模型加载时根据角度配置生成并缓存搜索角度，避免训练阶段重复旋转和存储。
-- **部分可见目标**：目标被图像边界截断时仍可匹配。评分只使用位于图像内的特征点，并由 `min_visible_ratio` 控制最低可见比例；绘制结果会自动裁剪到图像范围。
-- **多尺度匹配**：无需重新训练模板即可搜索离散尺度范围，例如 `0.8` 至 `1.2`。
-- **多模板匹配**：一次调用可加载多个模型文件；结果包含 `template_id`、位置、角度、尺度、得分和可见比例。模型 ID 必须为唯一正数。
-- **清晰的结果可视化与数据导出**：核心库仍提供传统 OpenCV 结果绘制接口；Qt5 客户端则保留原始输入图，在 `QGraphicsView` 前景层以抗锯齿矢量绘制 HALCON 风格绿色亚像素轮廓、青色旋转框和姿态箭头，不将覆盖烧录进推理图像。客户端支持多模板按 `template_id` 选择模型、运行时参数设置及滚轮锚点缩放，位姿数据继续写入日志。
-- **逐点匹配质量**：模板轮廓点按梯度方向余弦相似度逐像素点精准着色，绿色为强匹配、黄色为中等匹配、红色为弱匹配或缺失边缘；金字塔各层特征及匹配目标特征均采用单像素高保真渲染。
-- **模板金字塔展开图**：训练时可将真实灰度金字塔及每层 canonical 特征保存为一张从左上到右下展开的图像，画布随层数和图像尺寸自动扩展。
-
-## 相似度原理
-
-相似度计算公式如下：
-
-![formula1.svg](assert/.md/formula1.svg)
-
-将梯度拆分为归一化向量：
-
-![formula1.svg](assert/.md/formula2.svg)
-
-因此余弦相似度为：
-
-![formula1.svg](assert/.md/formula3.svg)
-
-## 目录结构
+如果尚未安装 Qt5，可执行：
 
 ```bash
-.
-├── 3rdparty
-│   └── opencv # OpenCV 依赖
-├── assert # 匹配测试图像
-├── build_opencv_with_contrib.sh # 构建带 contrib 模块的 OpenCV 脚本
-├── CMakeLists.txt # CMake 构建配置
-├── docs
-│   └── template_matching_algorithm.md # 模板算法原理说明
-├── include # 项目头文件
-│   ├── FindTemplateV1.h
-│   ├── MakeTemplateV1.h
-│   ├── ROI.h
-│   ├── Timer.h
-│   └── Type.h
-├── inference.cpp # 匹配程序源码
-├── LICENSE
-├── README.md
-├── src # 库源码
-│   ├── FindTemplateV1.cpp
-│   └── MakeTemplateV1.cpp
-├── tests
-│   └── test_matching.cpp # 回归测试
-└── train.cpp # 训练程序源码
+UI/build_qt5.sh --jobs 8
 ```
 
-Qt5 客户端源码和构建脚本位于 [UI/](UI/)，详见 [UI/README.md](UI/README.md)。顶层 CMake 默认同时构建核心程序和 Qt5 客户端；无 Qt 环境时可显式关闭客户端。
+脚本下载并校验 Qt 5.15.16，将最小模块安装到 `3rdparty/qt5`；也可用
+`--cache`、`--install` 或对应环境变量覆盖路径。构建 Qt 所需的系统开发包
+（X11/XCB、fontconfig、freetype、ICU 等）需预先由系统包管理器安装。
 
-## 环境要求
-
-请在 `Linux` 环境安装：
-
-- `CMake` 3.10 或更高版本
-- 支持 C++11 的 `g++`
-- `OpenCV 4.7.0`（可选 `contrib` 模块）
-
-如需构建 OpenCV，请运行：
+Ubuntu 18.04 的源码构建依赖可一次安装：
 
 ```bash
-./build_opencv_with_contrib.sh
+sudo apt update
+sudo apt install build-essential cmake libopencv-dev libomp-dev \
+  pkg-config patchelf zip
 ```
 
-如果使用 `cmake` 构建 `OpenCV 4.7.0` 失败，可下载 `.cache.zip` 并解压到 `your_opencv_source_dir/.cache`：
+若使用仓库内 Qt5，仍需安装 Qt 构建所需的 X11/XCB、fontconfig、freetype 和 ICU
+开发包；`UI/build_qt5.sh` 会将 Qt 安装到 `3rdparty/qt5`。为保证发布包能在 Ubuntu
+18.04 及更高版本运行，Linux 发布包应在 Ubuntu 18.04 或兼容的最低 glibc 环境中
+构建，再复制到更新版本系统。
 
-https://wwyn.lanzout.com/iB7Mb34k8kwd
+Windows 源码构建需要 Git、CMake、Visual Studio 2019/2022（含 C++ 桌面组件）或
+MinGW-w64，以及 OpenCV 4.7.0 的 Windows 开发包。Qt 客户端还需要 Qt5 Widgets/
+Concurrent 和同版本的 `windeployqt.exe`；将 OpenCV `bin` 目录加入 `PATH`，或由
+Windows 发布脚本复制 DLL 到发布目录。
 
-## CMake 构建
+## 编译、验证和安装
+
+从仓库根目录执行，一次配置同时生成核心库、CLI 和 Qt 客户端：
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
-# 无 Qt 环境时：cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_QT_CLIENT=OFF
 ```
 
-Qt5 客户端目标为 `build/UI/shape_match_qt`，仓库会自动优先使用 `3rdparty/qt5`。
+生成文件：
 
-亚像素精修始终编译，运行时由 `ScaleSearchCfg::subpixel_refine` 或 CLI `--subpixel` 控制。
-AVX2 使用 x86 GCC/Clang 函数级目标隔离和 CPU 能力检测，运行时由 `ScaleSearchCfg::use_simd`
-或 CLI `--simd` 请求；不支持 AVX2 时自动回退标量实现，ARM 等非 x86 平台直接使用标量路径。
-边缘特征后端是训练 API 的 `T_T::EdgeMethod` 参数（`CURRENT` 或 `DEVERNAY`），默认 CURRENT，
-并写入模型 JSON；旧 JSON/BIN 缺少该字段时按 CURRENT 加载。二进制元数据追加在旧 payload 尾部，
-不改变旧格式字段布局。
-
-Devernay/Canny 流程仅参考以下公开资料的算法原理，仓库未复制第三方实现代码：
-
-- [fcqing/sub-pixel-edge-detect](https://github.com/fcqing/sub-pixel-edge-detect)：仓库页面未声明
-  `LICENSE`，因此不作为代码依赖或代码来源。
-- [spartajet/subpixel-edge](https://github.com/spartajet/subpixel-edge)：该仓库声明 MIT 或 Apache-2.0
-  双许可证；本项目不复制其代码，也不引入其 Rust 依赖。
-
-## 程序使用
-
-训练程序示例：
-
-```bash
-./train
-./train ../assert/m1.png
-./train ../assert/m1.png --id 7 --output model_7.json
-./train ../assert/m1.png --id 7 --output model_7.json --pyramid-output pyramid_7.png
+```text
+build/train
+build/inference
+build/UI/shape_match_qt       # BUILD_QT_CLIENT=ON 且找到 Qt5 时
 ```
 
-完整命令行格式如下：
+无 Qt 环境的核心构建：
 
 ```bash
-./train [template_image] [--id N] [--edge-method pixel|current|devernay]
-           [--output FILE] [--pyramid-output FILE]
+cmake -S . -B build-core -DCMAKE_BUILD_TYPE=Release -DBUILD_QT_CLIENT=OFF
+cmake --build build-core --parallel
 ```
 
-不传参数时默认读取 `../assert/m1.png`；不传 `--output` 时，模型按模板输入文件名生成到 `train` 可执行文件同级目录，例如
-`m9_1.bmp` 生成 `m9_1.json`。`--edge-method pixel` 使用 Canny 像素级整数特征，
-`current`（默认）保留 Canny + 抛物线亚像素定位，`devernay` 使用 Devernay 亚像素边缘。
-`--pyramid-output` 为可选项；指定后会额外保存模板特征金字塔图。图中绿色点是各层实际参与匹配的 canonical 特征，最粗层位于左上角，原始分辨率层位于右下角。
-
-### 匹配过程可视化编译开关
-
-粗匹配和逐层精匹配的交互式窗口默认关闭，避免影响并行计算和无人值守运行。按需重新配置构建目录：
+安装到 CMake 构建目录下的 `publish`：
 
 ```bash
-# 观察最高金字塔层的粗匹配搜索及候选结果
-cmake -S . -B build-debug -DSHAPE_MATCH_VISUALIZE_COARSE=ON
+cmake --install build --prefix build/publish
+```
 
-# 观察每个候选从高层向低层细化的过程
-cmake -S . -B build-debug -DSHAPE_MATCH_VISUALIZE_FINE=ON
+Windows PowerShell（Visual Studio 生成器）使用同一套 CMake 工程：
 
-# 两者同时开启
-cmake -S . -B build-debug \
-  -DSHAPE_MATCH_VISUALIZE_COARSE=ON \
+```powershell
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+  -DOpenCV_DIR="$PWD\3rdparty\opencv\build"
+cmake --build build --config Release
+cmake --install build --config Release --prefix build\publish
+```
+
+如果使用 MinGW，将生成器替换为 `-G "MinGW Makefiles"`，并使用
+`cmake --build build --config Release --parallel`。运行时将
+`3rdparty\opencv\bin` 中的 DLL 放在可执行文件同目录或加入 `PATH`；Qt 客户端
+还需运行 `windeployqt build\UI\Release\shape_match_qt.exe`。
+
+Linux/Windows 的无源码发布包由以下脚本生成，包内包含可执行文件、核心库、依赖
+动态库和 Qt 插件（目标平台可用时）：
+
+```bash
+./scripts/package_release.sh --output dist/edgeMatching-linux
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\package_release.ps1 -OutputDir .\dist\edgeMatching-windows
+```
+
+脚本会在失败时退出，不删除源码或已有构建目录；详细参数见脚本的 `--help` 或
+`Get-Help` 输出。
+
+匹配过程可视化是独立的 CMake 选项，默认关闭：
+
+```bash
+cmake -S . -B build-debug -DSHAPE_MATCH_VISUALIZE_COARSE=ON \
   -DSHAPE_MATCH_VISUALIZE_FINE=ON
 cmake --build build-debug --parallel
 ```
 
-这些开关使用 `cv::imshow`/`cv::waitKey` 逐帧暂停，并为对应阶段关闭 OpenMP 并行。轮廓绘制会跳过裁剪图之外的点，不影响部分可见目标的评分；如果当前 OpenCV 后端没有可用图形桌面，程序会输出一次提示、关闭后续窗口并继续完成推理。在服务器或 CI 中仍建议保持 `OFF`。
-
-匹配程序示例：
-
-```bash
-./inference
-./inference ../assert/src1_2_3.bmp
-```
-
-完整命令行格式如下：
-
-```bash
-./inference [search_image] [model1.json model2.json ...] \
-  [--min-score N] [--max-overlap N] \
-  [--angle-start DEG] [--angle-end DEG] \
-  [--scale-min N] [--scale-max N] [--scale-step N] \
-  [--min-visible-ratio N] [--min-contrast N] \
-  [--metric use-polarity|ignore-global-polarity|ignore-local-polarity] \
-  [--subpixel] [--output FILE]
-```
-
-以下命令加载两个模板，在 `0.8x` 至 `1.2x` 范围搜索，并允许至少一半特征可见：
-
-```bash
-./inference ../assert/src.bmp model_a.json model_b.json \
-  --scale-min 0.8 --scale-max 1.2 --scale-step 0.05 \
-  --min-visible-ratio 0.5 --output result.png
-```
-
-不传参数时，默认使用 `../assert/src.bmp`、`./model.json`、尺度 `1.0` 和完整可见目标。路径相对于进程工作目录解析，自动化运行时建议显式指定路径。
-
-控制台结果格式为：
+## CLI：训练模板
 
 ```text
-[index] template_id=... x=... y=... angle=... score=... scale=... visible=...
+build/train [template_image] [--id N]
+            [--edge-method pixel|current|devernay]
+            [--output FILE] [--pyramid-output FILE]
 ```
 
-左侧信息栏的目标行格式为 `#1 T1 S0.925 M1.00 C123.2,453.2,135.5`，依次表示
-目标序号、模板号、得分、缩放比例以及 `x,y,angle`。待测图本身只显示对应的
-`#1` 小标签：从角度箭头方向顺时针旋转 135° 选取包围框角，标签沿该角的长边
-平行贴合。字体、内边距、信息栏宽度和多列排版会依据图像尺寸及结果数量自适应。
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `template_image` | `../assert/m1.png` | 8 位灰度或彩色模板图；彩色图在核心内部转灰度。 |
+| `--id N` | `1` | 正整数模板 ID。 |
+| `--edge-method` | `current` | `pixel`：Canny 像素级；`current`：Canny + 抛物线亚像素；`devernay`：Devernay 亚像素。 |
+| `--output FILE` | 可执行文件同级的 `<模板文件名>.json` | JSON 输出路径；扩展名由调用者指定。 |
+| `--pyramid-output FILE` | 不保存 | 保存各层灰度图和 canonical 特征叠加预览。 |
 
-## `assert` 样例快速复现
+CLI 当前未暴露的训练默认值为：金字塔层数 `-1`（自动）、角度 `-180..180°`、
+步长 `1°`、Otsu 关闭、最小/最大对比度 `25/100`。Qt 训练页可以直接设置这些值。
+模型只保存 canonical 特征，加载时按推理角度生成缓存。
 
-以下命令覆盖基础样例中的 8 张模板图和 13 张待测图。请在仓库根目录执行；模型、结果图和日志都会写入 `build/repro/`，不会覆盖 `assert/` 内的原图。包含 `m9` 系列的完整 11 模板、26 搜索图复现命令见后文“assert 全量回归矩阵”。
-
-先构建程序并创建输出目录：
+示例：
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
-cmake --build build --parallel
-mkdir -p build/repro
+build/train assert/m9_1.bmp --id 10 \
+  --edge-method devernay \
+  --output build/m9_1.json \
+  --pyramid-output build/m9_1.pyramid.png
 ```
 
-训练全部模板（ID 与文件名中的数字一致）：
+## CLI：推理
+
+```text
+build/inference [search_image] [model1.json model2.json ...]
+                [--min-score N] [--max-overlap N]
+                [--angle-start DEG] [--angle-end DEG]
+                [--scale-min N] [--scale-max N] [--scale-step N]
+                [--min-visible-ratio N] [--min-contrast N]
+                [--metric use-polarity|ignore-global-polarity|ignore-local-polarity]
+                [--subpixel] [--simd] [--output FILE]
+```
+
+| 参数 | 默认值 | 合法范围/说明 |
+| --- | --- | --- |
+| `search_image` | `../assert/src.bmp` | 待测图像，CLI 以 `IMREAD_GRAYSCALE` 读取。 |
+| `model1...` | `./model.json` | 一个或多个 JSON/BIN 模型；多模型 ID 重复或非正时仅在内存中确定性重编号，不修改源文件。 |
+| `--min-score` | `0.7` | `[0,1]`，最终最低匹配得分。 |
+| `--max-overlap` | `0.5` | `[0,1]`，重叠抑制阈值。 |
+| `--angle-start/end` | `-180/180` | 整数角度，`-180 ≤ start ≤ end ≤ 180`；终止角是绝对角度，不是跨度。 |
+| `--scale-min/max/step` | `1/1/1` | `0 < min ≤ max`，步长为正；三个值为 1 时为单尺度。 |
+| `--min-visible-ratio` | `1.0` | `[0,1]`；边界截断目标可降低，例如 `0.5`。 |
+| `--min-contrast` | `0` | `[0,361]` 的整数；过滤待测图弱梯度。 |
+| `--metric` | `use-polarity` | 有符号极性、忽略全局极性或逐点忽略局部极性。 |
+| `--subpixel` | 关闭 | NMS 后精修 `x/y/angle/scale`；不开启时仍可使用亚像素模板特征。 |
+| `--simd` | 关闭 | 请求 AVX2；CPU 不支持时自动回退标量路径。 |
+| `--output` | `result.png` | 保存带核心绘制结果的图像；同时在相同目录写入同名 `.json`。 |
+
+CLI 的固定搜索默认值为：最大结果数 `200`、搜索层数 `-1`、贪婪度 `0.9`、
+按 Y 排序、全图 ROI。示例：
 
 ```bash
-build/train assert/m1.png --id 1 --output build/repro/model_1.json | tee build/repro/train_1.log
-build/train assert/m2.png --id 2 --output build/repro/model_2.json | tee build/repro/train_2.log
-build/train assert/m3.png --id 3 --output build/repro/model_3.json | tee build/repro/train_3.log
-build/train assert/m4.bmp --id 4 --output build/repro/model_4.json | tee build/repro/train_4.log
-build/train assert/m5.jpg --id 5 --output build/repro/model_5.json | tee build/repro/train_5.log
-build/train assert/m6.bmp --id 6 --output build/repro/model_6.json | tee build/repro/train_6.log
-build/train assert/m7.bmp --id 7 --output build/repro/model_7.json | tee build/repro/train_7.log
-build/train assert/m8.bmp --id 8 --output build/repro/model_8.json | tee build/repro/train_8.log
+build/inference assert/src8.bmp build/model_8.json \
+  --min-score 0.95 --min-visible-ratio 0.5 \
+  --subpixel --output build/src8.result.png
 ```
 
-推理全部待测图：
+输出行格式：
+
+```text
+[0] template_id=8 x=... y=... angle=... score=... scale=... visible=... matched=...
+```
+
+`visible` 是几何可见特征比例，`matched` 是可见点中通过对比度和梯度检查的比例。
+
+## Qt5 客户端
 
 ```bash
-# m1、m2、m3 三模板联合匹配，包含左右边界的半截目标
-build/inference assert/src1_2_3.bmp build/repro/model_1.json build/repro/model_2.json build/repro/model_3.json --angle-start -5 --angle-end 5 --min-visible-ratio 0.5 --output build/repro/result_1_2_3.png | tee build/repro/infer_1_2_3.log
-
-# m4、m5、m6 单模板匹配
-build/inference assert/src4.bmp build/repro/model_4.json --output build/repro/result_4.png | tee build/repro/infer_4.log
-build/inference assert/src5.bmp build/repro/model_5.json --output build/repro/result_5.png | tee build/repro/infer_5.log
-build/inference assert/src6.jpg build/repro/model_6.json --output build/repro/result_6.png | tee build/repro/infer_6.log
-
-# m7 在 8 张旋转/位移待测图上匹配
-build/inference assert/src7_1.bmp build/repro/model_7.json --output build/repro/result_7_1.png | tee build/repro/infer_7_1.log
-build/inference assert/src7_2.bmp build/repro/model_7.json --output build/repro/result_7_2.png | tee build/repro/infer_7_2.log
-build/inference assert/src7_3.bmp build/repro/model_7.json --output build/repro/result_7_3.png | tee build/repro/infer_7_3.log
-build/inference assert/src7_4.bmp build/repro/model_7.json --output build/repro/result_7_4.png | tee build/repro/infer_7_4.log
-build/inference assert/src7_5.bmp build/repro/model_7.json --output build/repro/result_7_5.png | tee build/repro/infer_7_5.log
-build/inference assert/src7_6.bmp build/repro/model_7.json --output build/repro/result_7_6.png | tee build/repro/infer_7_6.log
-build/inference assert/src7_7.bmp build/repro/model_7.json --output build/repro/result_7_7.png | tee build/repro/infer_7_7.log
-build/inference assert/src7_8.bmp build/repro/model_7.json --output build/repro/result_7_8.png | tee build/repro/infer_7_8.log
-
-# m8 共 7 个真实目标：单尺度搜索，保留边界部分可见目标
-build/inference assert/src8.bmp build/repro/model_8.json --min-score 0.95 --min-visible-ratio 0.5 --output build/repro/result_8.png | tee build/repro/infer_8.log
+./build/UI/shape_match_qt
 ```
 
-`src8.bmp` 中的真实目标尺度均为 `1.0x`。对该图强制遍历 `0.8x`–`1.2x`
-不会增加有效召回，反而会近似按尺度数量成倍增加耗时，并且容易在条形模板的
-局部重复结构上产生低分候选。此处使用 `--min-score 0.95` 过滤分数约为
-`0.70`–`0.86` 的局部匹配，保留 7 个分数为 `0.95`–`0.996` 的真实结果。只有
-待测数据确实存在尺寸变化时，才建议设置 `--scale-min`/`--scale-max`/`--scale-step`。
+客户端调用与 CLI 相同的 `CreateTemplate`、`SearchTemplate` 和绘制接口，不另有一套
+匹配算法。文件选择默认打开 `assert`（模板/输入图像）或可执行文件目录（模型）；
+模型、金字塔预览、结果 PNG 和同名结果 JSON 默认写入 `shape_match_qt` 同级目录。
+结果 PNG 是核心库绘制后的文件，客户端窗口显示则使用独立的矢量叠加层。
 
-`src1_2_3.bmp` 的预期结果为 33 个：27 个完整目标、左边界 3 个部分可见的
-`m3`，以及右边界 3 个中心位于图外的 `m1`。`--min-visible-ratio 0.5` 使部分目标
-按实际可见特征评分；目标中心无需位于图内。
-该样例的目标方向接近 `0°`，因此用 `--angle-start -5 --angle-end 5` 代替默认的
-`-180°`–`180°` 全角度搜索，避免对三个模板计算数百个不可能的方向。
+训练页和推理页参数对应关系如下：
 
-`src9_7.png` 中两个工件被其他金属工件大面积遮挡。`--min-visible-ratio`
-只描述图像边界和用户掩模产生的几何可见率，不能识别场景内遮挡；默认
-`use-polarity` 的有符号梯度会被遮挡物的反向边缘拉低。该场景应使用局部极性
-鲁棒度量，并以较高阈值抑制杂乱背景候选：
+| Qt 参数 | 核心/CLI 对应 | 默认值 |
+| --- | --- | --- |
+| 模板图像、Template ID | `template_image`、`--id` | `../assert/m1.png`、`1` |
+| 金字塔层数、角度起止/步长 | `createTemplate` 的 `num_levels`、`angle_start/end/step` | `-1`、`-180/180/1` |
+| Otsu、最小/最大对比度 | `create_otsu`、`min/max_contrast` | 关、`25/100` |
+| 边缘特征算法 | `--edge-method` / `EdgeMethod` | Canny + 抛物线亚像素 |
+| 输入图像、模型（可多选） | `search_image`、`model1...` | 无；需选择 |
+| ROI x/y/w/h | `SearchTemplate` ROI 重载 | `0/0/0/0`（全图） |
+| 搜索角度起止、最小得分、最大重叠 | `--angle-start/end`、`--min-score`、`--max-overlap` | `-180/180`、`0.7`、`0.5` |
+| 最大匹配数、搜索层数、贪婪度、按 Y 排序 | 核心 API 参数（CLI 固定为 `200/-1/0.9/true`） | `200/-1/0.9/开` |
+| 尺度最小/最大/步长、最小可见比例 | `--scale-min/max/step`、`--min-visible-ratio` | `1/1/1`、`1` |
+| 搜索最小对比度、匹配度量 | `--min-contrast`、`--metric` | `0`、`use-polarity` |
+| 亚像素精修、AVX2 SIMD | `--subpixel`、`--simd` | 关、关 |
 
-```bash
-build/inference assert/src9_7.png build/model_9.json build/model_10.json \
-  build/model_11.json --min-visible-ratio 0.5 \
-  --metric ignore-local-polarity --min-score 0.9 --output build/result.png
-```
-
-该配置返回 5 个目标；参考中心坐标约为 `(233,123)`、`(368,178)`、
-`(204,240)`、`(323,327)` 和 `(201,334)`。局部极性模式约束更宽，不能简单
-沿用默认低阈值，否则会增加假阳性。
-
-最后运行确定性合成回归测试：
-
-```bash
-ctest --test-dir build --output-on-failure
-```
+要让 Qt 与矩阵中的 CLI 结果对齐，训练时使用相同图像、ID、边缘算法和训练参数，
+推理时使用相同模型、图像及 CLI 参数；Qt 的最大匹配数设为 `200`、搜索层数设为
+`-1`、贪婪度设为 `0.9`、按 Y 排序开启、ROI 四项为 0。Qt 日志会输出实际参数和
+等价 `inference` 命令，训练/推理纯耗时也分别显示。
+CLI 接受的搜索角度为整数 `[-180,180]`；Qt 控件范围更宽时，跨端对比仍应使用该
+公共范围（CLI 会拒绝范围外的角度）。
 
 ## assert 全量回归矩阵
 
-以下结果于 2026-09-11 在 Intel Core i7-10700（16 个逻辑线程）、Release
-构建上取得。输出、模型及日志统一保存在 `build/assert_matrix/`。所有模板使用
-唯一 ID；所有输出姿态、分数及比例均检查为有限数。
+该矩阵使用仓库 `assert/` 中的 11 个模板和 26 张待测图。下表命令直接调用
+`build/train` 和 `build/inference`，不依赖额外测试二进制，也不调用 CTest；
+因此可独立逐案例复现。表中的期望分布来自删除测试目录前的全量回归结果，
+格式为 `template_id:数量`。
+
+先编译核心程序，并创建独立输出目录：
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 mkdir -p build/assert_matrix
-
-for spec in "1 m1.png" "2 m2.png" "3 m3.png" "4 m4.bmp" "5 m5.jpg" \
-            "6 m6.bmp" "7 m7.bmp" "8 m8.bmp" "9 m9.bmp" \
-            "10 m9_1.bmp" "11 m9_2.bmp"; do
-  set -- $spec
-  build/train "assert/$2" --id "$1" \
-    --output "build/assert_matrix/model_$1.json" \
-    --pyramid-output "build/assert_matrix/pyramid_$1.png" \
-    > "build/assert_matrix/train_$1.log" 2>&1
-done
-
-build/inference assert/src1_2_3.bmp build/assert_matrix/model_{1,2,3}.json \
-  --angle-start -5 --angle-end 5 --min-visible-ratio 0.5 \
-  --output build/assert_matrix/result_src1_2_3.png \
-  > build/assert_matrix/infer_src1_2_3.log 2>&1
-
-build/inference assert/src4.bmp build/assert_matrix/model_4.json \
-  --output build/assert_matrix/result_src4.png > build/assert_matrix/infer_src4.log 2>&1
-build/inference assert/src5.bmp build/assert_matrix/model_5.json \
-  --min-score 0.65 --output build/assert_matrix/result_src5.png \
-  > build/assert_matrix/infer_src5.log 2>&1
-build/inference assert/src6.jpg build/assert_matrix/model_6.json \
-  --output build/assert_matrix/result_src6.png > build/assert_matrix/infer_src6.log 2>&1
-
-for n in 1 2 3 4 5 6 7 8; do
-  build/inference "assert/src7_$n.bmp" build/assert_matrix/model_7.json \
-    --output "build/assert_matrix/result_src7_$n.png" \
-    > "build/assert_matrix/infer_src7_$n.log" 2>&1
-done
-
-build/inference assert/src8.bmp build/assert_matrix/model_8.json \
-  --min-score 0.95 --min-visible-ratio 0.5 \
-  --output build/assert_matrix/result_src8.png > build/assert_matrix/infer_src8.log 2>&1
-
-for n in $(seq 1 13); do
-  score=0.9
-  case "$n" in
-    4) score=0.890 ;;
-    6) score=0.800 ;;
-  esac
-  build/inference "assert/src9_$n.png" build/assert_matrix/model_{9,10,11}.json \
-    --metric ignore-local-polarity --min-score "$score" \
-    --output "build/assert_matrix/result_src9_$n.png" \
-    > "build/assert_matrix/infer_src9_$n.log" 2>&1
-done
-ctest --test-dir build --output-on-failure
 ```
 
-`src1_2_3` 只含接近零度的目标，因此收窄到 `[-5°,5°]`，并用 0.5
-可见率保留边缘半截目标。`src8` 已知为单尺度且真实目标分数高，使用 0.95
-抑制条纹局部重复。`src9` 的亮暗极性会局部变化且存在遮挡，使用 local polarity；
-大多数图用 0.9，遮挡较重的 `src9_4`、`src9_6` 采用逐图验证过的较低阈值。
-`src5` 使用 0.65，以恢复密集阵列中一个略低分目标；
-其余图使用默认参数，作为默认行为回归。
+### 训练命令
 
-| 图像 | 结果数 | template_id 分布 | 总耗时 (ms) |
-|---|---:|---|---:|
-| [src1_2_3](assert/.md/result_src1_2_3.png) | 33 | 1:12, 2:9, 3:12 | 973.894 |
-| src4 | 3 | 4:3 | 149.363 |
-| src5 | 161 | 5:161 | 1696.288 |
-| src6 | 15 | 6:15 | 369.577 |
-| src7_1 | 1 | 7:1 | 106.669 |
-| src7_2 | 1 | 7:1 | 97.227 |
-| src7_3 | 1 | 7:1 | 117.534 |
-| src7_4 | 1 | 7:1 | 105.416 |
-| src7_5 | 1 | 7:1 | 96.799 |
-| src7_6 | 1 | 7:1 | 96.358 |
-| src7_7 | 1 | 7:1 | 96.154 |
-| src7_8 | 1 | 7:1 | 98.313 |
-| [src8](assert/.md/result_src8.png) | 7 | 8:7 | 255.111 |
-| [src9_1](assert/.md/result_src9_1.png) | 4 | 9:2, 10:2 | 310.087 |
-| [src9_2](assert/.md/result_src9_2.png) | 8 | 9:4, 10:3, 11:1 | 427.167 |
-| [src9_3](assert/.md/result_src9_3.png) | 5 | 10:4, 11:1 | 303.056 |
-| [src9_4](assert/.md/result_src9_4.png) | 4 | 9:2, 10:1, 11:1 | 413.210 |
-| [src9_5](assert/.md/result_src9_5.png) | 3 | 9:3 | 377.035 |
-| [src9_6](assert/.md/result_src9_6.png) | 4 | 9:3, 11:1 | 641.879 |
-| [src9_7](assert/.md/result_src9_7.png) | 5 | 9:2, 10:2, 11:1 | 340.823 |
-| [src9_8](assert/.md/result_src9_8.png) | 5 | 10:4, 11:1 | 374.005 |
-| [src9_9](assert/.md/result_src9_9.png) | 4 | 9:2, 10:2 | 401.999 |
-| [src9_10](assert/.md/result_src9_10.png) | 4 | 9:2, 10:1, 11:1 | 350.087 |
-| [src9_11](assert/.md/result_src9_11.png) | 3 | 9:1, 10:1, 11:1 | 360.690 |
-| [src9_12](assert/.md/result_src9_12.png) | 3 | 10:3 | 333.876 |
-| [src9_13](assert/.md/result_src9_13.png) | 2 | 9:2 | 279.067 |
+以下 11 条命令生成与矩阵相同的模型。每条命令同时保存 JSON 模型和各层金字塔预览图。
 
-所有 26 张搜索图的进程退出码均为 0。表中 `src9` 结果图均经人工目视复核；
-降低阈值的两张图没有用重复框凑数。`src5` 的 161 个结果明显多于其他单模板
-样例；该图本身包含密集重复结构，在没有独立人工标注计数前，本矩阵只将其记录为
-回归基线，不将这 161 项直接宣称为全部真阳性。若业务期望数量更少，应先建立标注
-并分析得分/空间分布，再决定提高阈值或增加结构约束。
+| 模板 ID | 模板图像 | 可复制训练命令 |
+| ---: | --- | --- |
+| 1 | `assert/m1.png` | `build/train assert/m1.png --id 1 --output build/assert_matrix/model_1.json --pyramid-output build/assert_matrix/pyramid_1.png` |
+| 2 | `assert/m2.png` | `build/train assert/m2.png --id 2 --output build/assert_matrix/model_2.json --pyramid-output build/assert_matrix/pyramid_2.png` |
+| 3 | `assert/m3.png` | `build/train assert/m3.png --id 3 --output build/assert_matrix/model_3.json --pyramid-output build/assert_matrix/pyramid_3.png` |
+| 4 | `assert/m4.bmp` | `build/train assert/m4.bmp --id 4 --output build/assert_matrix/model_4.json --pyramid-output build/assert_matrix/pyramid_4.png` |
+| 5 | `assert/m5.jpg` | `build/train assert/m5.jpg --id 5 --output build/assert_matrix/model_5.json --pyramid-output build/assert_matrix/pyramid_5.png` |
+| 6 | `assert/m6.bmp` | `build/train assert/m6.bmp --id 6 --output build/assert_matrix/model_6.json --pyramid-output build/assert_matrix/pyramid_6.png` |
+| 7 | `assert/m7.bmp` | `build/train assert/m7.bmp --id 7 --output build/assert_matrix/model_7.json --pyramid-output build/assert_matrix/pyramid_7.png` |
+| 8 | `assert/m8.bmp` | `build/train assert/m8.bmp --id 8 --output build/assert_matrix/model_8.json --pyramid-output build/assert_matrix/pyramid_8.png` |
+| 9 | `assert/m9.bmp` | `build/train assert/m9.bmp --id 9 --output build/assert_matrix/model_9.json --pyramid-output build/assert_matrix/pyramid_9.png` |
+| 10 | `assert/m9_1.bmp` | `build/train assert/m9_1.bmp --id 10 --output build/assert_matrix/model_10.json --pyramid-output build/assert_matrix/pyramid_10.png` |
+| 11 | `assert/m9_2.bmp` | `build/train assert/m9_2.bmp --id 11 --output build/assert_matrix/model_11.json --pyramid-output build/assert_matrix/pyramid_11.png` |
 
-## 算法说明
+### 推理命令矩阵
 
-### 模板制作
+每行推理命令都保存绘制后的 PNG，并由 CLI 在相同目录自动保存同名 JSON。执行前应先完成
+上表 11 个训练命令。`src5=161` 是重复结构回归基线，不单独宣称 161 个均为业务真阳性。
 
-模板图像和掩模必须为非空、尺寸相同的 8 位图像；彩色输入会先转换为灰度图。程序建立高斯金字塔，在掩模内提取边缘点和归一化梯度方向，将坐标转换为模板中心原点，并为每层保存一份 canonical `0°` 特征。
+| 案例 | 可复制推理命令 | 期望结果数 | 期望 `template_id` 分布 |
+| --- | --- | ---: | --- |
+| `src1_2_3` | `build/inference assert/src1_2_3.bmp build/assert_matrix/model_1.json build/assert_matrix/model_2.json build/assert_matrix/model_3.json --angle-start -5 --angle-end 5 --min-visible-ratio 0.5 --output build/assert_matrix/result_src1_2_3.png` | 33 | `1:12 2:9 3:12` |
+| `src4` | `build/inference assert/src4.bmp build/assert_matrix/model_4.json --output build/assert_matrix/result_src4.png` | 3 | `4:3` |
+| `src5` | `build/inference assert/src5.bmp build/assert_matrix/model_5.json --min-score 0.65 --output build/assert_matrix/result_src5.png` | 161 | `5:161` |
+| `src6` | `build/inference assert/src6.jpg build/assert_matrix/model_6.json --output build/assert_matrix/result_src6.png` | 15 | `6:15` |
+| `src7_1` | `build/inference assert/src7_1.bmp build/assert_matrix/model_7.json --output build/assert_matrix/result_src7_1.png` | 1 | `7:1` |
+| `src7_2` | `build/inference assert/src7_2.bmp build/assert_matrix/model_7.json --output build/assert_matrix/result_src7_2.png` | 1 | `7:1` |
+| `src7_3` | `build/inference assert/src7_3.bmp build/assert_matrix/model_7.json --output build/assert_matrix/result_src7_3.png` | 1 | `7:1` |
+| `src7_4` | `build/inference assert/src7_4.bmp build/assert_matrix/model_7.json --output build/assert_matrix/result_src7_4.png` | 1 | `7:1` |
+| `src7_5` | `build/inference assert/src7_5.bmp build/assert_matrix/model_7.json --output build/assert_matrix/result_src7_5.png` | 1 | `7:1` |
+| `src7_6` | `build/inference assert/src7_6.bmp build/assert_matrix/model_7.json --output build/assert_matrix/result_src7_6.png` | 1 | `7:1` |
+| `src7_7` | `build/inference assert/src7_7.bmp build/assert_matrix/model_7.json --output build/assert_matrix/result_src7_7.png` | 1 | `7:1` |
+| `src7_8` | `build/inference assert/src7_8.bmp build/assert_matrix/model_7.json --output build/assert_matrix/result_src7_8.png` | 1 | `7:1` |
+| `src8` | `build/inference assert/src8.bmp build/assert_matrix/model_8.json --min-score 0.95 --min-visible-ratio 0.5 --output build/assert_matrix/result_src8.png` | 7 | `8:7` |
+| `src9_1` | `build/inference assert/src9_1.png build/assert_matrix/model_9.json build/assert_matrix/model_10.json build/assert_matrix/model_11.json --metric ignore-local-polarity --min-score 0.9 --output build/assert_matrix/result_src9_1.png` | 4 | `9:2 10:2` |
+| `src9_2` | `build/inference assert/src9_2.png build/assert_matrix/model_9.json build/assert_matrix/model_10.json build/assert_matrix/model_11.json --metric ignore-local-polarity --min-score 0.9 --output build/assert_matrix/result_src9_2.png` | 8 | `9:4 10:3 11:1` |
+| `src9_3` | `build/inference assert/src9_3.png build/assert_matrix/model_9.json build/assert_matrix/model_10.json build/assert_matrix/model_11.json --metric ignore-local-polarity --min-score 0.9 --output build/assert_matrix/result_src9_3.png` | 5 | `10:4 11:1` |
+| `src9_4` | `build/inference assert/src9_4.png build/assert_matrix/model_9.json build/assert_matrix/model_10.json build/assert_matrix/model_11.json --metric ignore-local-polarity --min-score 0.890 --output build/assert_matrix/result_src9_4.png` | 4 | `9:2 10:1 11:1` |
+| `src9_5` | `build/inference assert/src9_5.png build/assert_matrix/model_9.json build/assert_matrix/model_10.json build/assert_matrix/model_11.json --metric ignore-local-polarity --min-score 0.9 --output build/assert_matrix/result_src9_5.png` | 3 | `9:3` |
+| `src9_6` | `build/inference assert/src9_6.png build/assert_matrix/model_9.json build/assert_matrix/model_10.json build/assert_matrix/model_11.json --metric ignore-local-polarity --min-score 0.800 --output build/assert_matrix/result_src9_6.png` | 4 | `9:3 11:1` |
+| `src9_7` | `build/inference assert/src9_7.png build/assert_matrix/model_9.json build/assert_matrix/model_10.json build/assert_matrix/model_11.json --metric ignore-local-polarity --min-score 0.9 --output build/assert_matrix/result_src9_7.png` | 5 | `9:2 10:2 11:1` |
+| `src9_8` | `build/inference assert/src9_8.png build/assert_matrix/model_9.json build/assert_matrix/model_10.json build/assert_matrix/model_11.json --metric ignore-local-polarity --min-score 0.9 --output build/assert_matrix/result_src9_8.png` | 5 | `10:4 11:1` |
+| `src9_9` | `build/inference assert/src9_9.png build/assert_matrix/model_9.json build/assert_matrix/model_10.json build/assert_matrix/model_11.json --metric ignore-local-polarity --min-score 0.9 --output build/assert_matrix/result_src9_9.png` | 4 | `9:2 10:2` |
+| `src9_10` | `build/inference assert/src9_10.png build/assert_matrix/model_9.json build/assert_matrix/model_10.json build/assert_matrix/model_11.json --metric ignore-local-polarity --min-score 0.9 --output build/assert_matrix/result_src9_10.png` | 4 | `9:2 10:1 11:1` |
+| `src9_11` | `build/inference assert/src9_11.png build/assert_matrix/model_9.json build/assert_matrix/model_10.json build/assert_matrix/model_11.json --metric ignore-local-polarity --min-score 0.9 --output build/assert_matrix/result_src9_11.png` | 3 | `9:1 10:1 11:1` |
+| `src9_12` | `build/inference assert/src9_12.png build/assert_matrix/model_9.json build/assert_matrix/model_10.json build/assert_matrix/model_11.json --metric ignore-local-polarity --min-score 0.9 --output build/assert_matrix/result_src9_12.png` | 3 | `10:3` |
+| `src9_13` | `build/inference assert/src9_13.png build/assert_matrix/model_9.json build/assert_matrix/model_10.json build/assert_matrix/model_11.json --metric ignore-local-polarity --min-score 0.9 --output build/assert_matrix/result_src9_13.png` | 2 | `9:2` |
 
-边缘特征会沿归一化梯度法线对前、中、后三个幅值样本做二次曲线拟合，将峰值位置限制在原像素的 `±0.5 px` 内，从而得到亚像素模板坐标。旋转模板缓存保留浮点坐标，不再在每个角度上量化为整数。
-
-JSON 模型只保存 canonical 特征。加载 JSON 或二进制模型时，匹配器根据 `angle_start`、`angle_end` 和 `angle_step` 旋转点坐标与梯度向量，并生成所需角度缓存。这样模型存储和训练阶段内存复杂度由约 `O(levels * angles * features)` 降为 `O(levels * features)`。加载历史上已经包含多角度数据的二进制模型时，不会重复展开。
-
-### 粗到精搜索
-
-待测图像建立梯度金字塔，在可用的最高层进行位置和角度粗搜索，再逐层向原图精化。得分是模板梯度方向与图像梯度方向的余弦相似度。中间层使用 `max(0.4, min_score-0.2)` 作为传播门限，避免降采样量化或模糊过早丢弃在 L0 能达到用户阈值的目标；只有 L0 使用用户给定的最终阈值。
-
-每个粗空间峰最多保留两个相差至少 90° 的角度模态。遮挡时错误的 180° 方向可能在最粗层暂时得分更高，保留第二模态可让正确方向继续到 L0；限制为两个则避免全角度候选成倍拖慢精匹配。逐层角度搜索窗口覆盖上一层角度步长并增加一个量化余量，防止正确方向卡在固定窗口边缘。
-
-重叠抑制采用轮廓特征支撑带 IoU，而不是只看模板外接框：将最接近候选角度的 L0 特征变换到结果位姿，在每个特征周围扩张 2 像素菱形支撑带，再计算像素集合 IoU。高置信同模板目标即使外接框重叠，只要支撑带不同也会保留；低置信同模板候选仍用旧外接框规则兜底去重。不同模板主要按支撑带判断，仅当中心距离不超过两模板较小边的 20% 时抑制低分近中心重复，避免同一工件被两个模板重复报告。
-
-对于部分可见目标，变换后位于图像外的点会被安全跳过，得分按可见点数归一化；`min_visible_ratio` 可拒绝可见特征过少的候选。绘制时同样裁剪轮廓和旋转矩形。
-
-多尺度匹配按 `scale_step` 遍历 `scale_min` 至 `scale_max`，并执行跨尺度重叠抑制。结果中的 `scale` 表示目标相对于训练模板的尺寸比例。多模板匹配只裁切一次 ROI、每个尺度只缩放一次输入，再由各模板复用只读尺度图像完成独立匹配；结果记录 `template_id`，合并候选后统一执行重叠抑制。
-
-`--min-contrast` 接受 `[0,361]` 的整数，按搜索图中央差分梯度幅值过滤弱边缘；默认 `0` 保持旧行为。`visible` 只统计坐标在图内且掩模为白色的几何可见点，`matched` 是这些可见点中达到最小对比度且梯度非零的比例。弱边缘仍计入得分分母，因此不会因只剩少量强边缘而产生虚高分。
-
-`--metric use-polarity` 使用有符号梯度方向；`ignore-global-polarity` 允许整个候选统一反色；`ignore-local-polarity` 则逐点忽略极性。后两者适合亮暗关系会变化的目标，但约束依次更宽松。
-
-`--subpixel` 或 `ScaleSearchCfg::subpixel_refine=true` 会在 NMS 后执行亚像素 `x/y/angle/scale` 精修：先在相邻角度得分上做抛物线拟合，再在精修角度下优化位置并联合复评；多尺度搜索还会对相邻三个尺度的同一空间峰做二次插值。内部目标下降时回退离散姿态。对外 `score` 保留离散匹配得分，不与内部双线性目标混用。精修每次最多均匀采样 512 个模板特征，默认运行时关闭。
-
-例如，对 `src8.bmp` 输出亚像素位置：
-
-```bash
-build/inference assert/src8.bmp build/repro/model_8.json --min-score 0.95 \
-  --min-visible-ratio 0.5 --subpixel --output build/repro/result_8_subpixel.png
-```
-
-多模板接口要求模型指针非空，且每个模型的 `template_id` 为唯一正数；不满足时接口返回 `false`。
-
-完整的数学推导、边界处理和工程注意事项见 [docs/template_matching_algorithm.md](docs/template_matching_algorithm.md)。
-
-## 参数建议
-
-| 参数 | 合法范围或建议初值 | 作用 |
-| --- | --- | --- |
-| `angle_start`, `angle_end` | `start <= end` | 限制搜索角度范围；范围越大耗时越高。 |
-| `angle_step` | 有限正数，常用 `1°` | 越小角度分辨率越高，但缓存和搜索开销越大。 |
-| `min_score` | `[0, 1]`，建议从 `0.7` 开始 | 提高可减少误检，降低可增强噪声或截断目标召回。 |
-| `greediness` | `(0, 1]`，建议从 `0.9` 开始 | 控制弱候选的提前终止。 |
-| `max_overlap` | `[0, 1]`，建议从 `0.5` 开始 | 越低越强地抑制重复目标。 |
-| `scale_min`, `scale_max` | `0 < min <= max` | 定义目标尺度范围；传统单尺度行为使用 `1,1`。 |
-| `scale_step` | 有限正数，建议从 `0.05` 开始 | 越小尺度分辨率越高，耗时近似成比例增加。 |
-| `min_visible_ratio` | `(0, 1]` | 完整目标使用 `1.0`；边界截断目标可从 `0.5` 开始。 |
-| `min_contrast` | `[0, 361]`，默认 `0` | 屏蔽搜索图中的弱梯度；建议用代表性样本从 `10`逐步上调。 |
-| `metric` | `use/global/local polarity` | 亮暗关系稳定时用 `use`；整体或局部反色时分别用 `global`/`local`。 |
-| `subpixel` | 开/关，默认关 | 在 NMS 后联合精修 `x/y/angle/scale`，不让亚像素计算进入全图穷举。 |
-
-近似穷举复杂度为 `O(positions * angles * scales * features)`。应尽量收窄角度和尺度范围，并在正常样本及边界样本上联合调节 `min_score` 与 `min_visible_ratio`。
-
-## 自动化测试
-
-CTest 中的回归测试覆盖 `0.8x`、`1.0x`、`1.2x` 匹配、边界部分可见目标、多模板 ID、canonical-only 训练数据、全局/局部极性反转、搜索对比度、非整数角度精修、轮廓支撑带 NMS、跨模板近中心去重、中间金字塔传播门限，以及 CLI 非法参数拒绝。
-
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
-cmake --build build --parallel
-ctest --test-dir build --output-on-failure
-```
-
-## 直接使用 g++ 编译
-
-也可以绕过 CMake，手动编译共享库和可执行文件：
-
-```bash
-g++ -std=c++11 -O3 -fopenmp -fPIC -o libMakeTemplateV1.so -shared src/MakeTemplateV1.cpp \
--I./include -I./3rdparty/opencv/include -L./3rdparty/opencv/lib \
--lopencv_core -lopencv_imgproc -lopencv_highgui -lopencv_imgcodecs -lopencv_calib3d -pthread
-
-g++ -std=c++11 -O3 -fopenmp -fPIC -o libFindTemplateV1.so -shared src/FindTemplateV1.cpp \
--I./include -I./3rdparty/opencv/include -L./3rdparty/opencv/lib \
--lopencv_core -lopencv_imgproc -lopencv_highgui -lopencv_imgcodecs -lopencv_calib3d -pthread
-```
-
-是否请求 SIMD 由运行时参数控制，不需要添加架构专用全局编译参数。
-
-## 性能参考
-
-在 CPU `I7-10700` 上，已有样例的执行时间约为 `41ms` 至 `207ms`，实际耗时取决于图像分辨率、角度范围、尺度数量、模板特征数和候选数量。
-
-部分图片来源于 [NCC](https://github.com/DennisLiu1993/Fastest_Image_Pattern_Matching.git)。
-
-## 安装
-
-```bash
-make install
-```
-
-安装后共享库位于 `publish/lib`，可执行文件位于 `publish/bin`，头文件位于 `publish/include/shapeMatch`。
+所有命令均从仓库根目录执行。训练日志可用 shell 重定向单独保存，例如
+`build/train ... > build/assert_matrix/train_1.log 2>&1`；推理日志同理。输出目录中的
+`model_*.json`、`pyramid_*.png`、`result_*.png` 和推理自动生成的同名 `result_*.json`
+不会覆盖 `assert/` 原图。CLI 矩阵是项目当前唯一的回归基线；若修改算法或参数，
+应重新执行表中训练和推理命令并核对期望结果数量及 `template_id` 分布。
 
 ## 许可证
 
-本项目采用 MIT License，详见 [LICENSE](LICENSE)。
+[MIT License](LICENSE)

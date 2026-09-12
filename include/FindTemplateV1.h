@@ -15,11 +15,9 @@
 namespace SM_V1
 {
     /**
-     * All searchTemplate overloads retain the historical parameter name
-     * angle_extent for source/ABI compatibility. Its value is an inclusive
-     * absolute stop angle, matching CreateTemplate::angle_end and the CLI
-     * --angle-end option. A caller with a span must convert it explicitly:
-     * angle_end = angle_start + angle_extent.
+     * 所有 searchTemplate 重载保留历史参数名 angle_extent 以兼容源码和 ABI；其值
+     * 是包含终点的绝对终止角，与 CreateTemplate::angle_end 和 CLI --angle-end 一致。
+     * 调用者若使用角度跨度，必须显式换算为 angle_end = angle_start + angle_extent。
      */
     /**
      * @brief 模板匹配搜索类，用于在图像中查找已训练的模板。
@@ -27,7 +25,7 @@ namespace SM_V1
     class SearchTemplate
     {
     public:
-        /** True when this binary can safely execute its AVX2 fast path. */
+        /** 当二进制可以安全执行 AVX2 快速路径时为 true。 */
         static bool isSimdAvailable();
         /**
          * @brief 构造函数

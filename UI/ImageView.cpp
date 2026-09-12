@@ -106,8 +106,7 @@ void ImageView::resizeEvent(QResizeEvent* event)
 
 void ImageView::updatePixelRendering()
 {
-    // At this scale each source pixel is large enough to inspect individually;
-    // interpolation would blur the pixel blocks beneath the grid.
+    // 当前缩放下每个源像素足够大，可逐像素检查；插值会使网格下的像素块模糊。
     setRenderHint(QPainter::SmoothPixmapTransform, zoom_ < 8.0);
 }
 
@@ -119,8 +118,8 @@ void ImageView::drawForeground(QPainter* painter, const QRectF& rect)
     const QRectF imageRect = pixmap_->boundingRect();
     const QRectF visible = rect.intersected(imageRect);
 
-    // Pixel grid is part of the raster layer.  It is deliberately disabled
-    // for normal zoom and pixelated at high zoom, before the vector overlay.
+    // 像素网格属于栅格层；普通缩放时关闭，高倍缩放时以像素方式绘制，并置于矢量
+    // 叠加层之前。
     if (zoom_ >= 8.0 && !visible.isEmpty()) {
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing, false);
@@ -143,9 +142,8 @@ void ImageView::drawForeground(QPainter* painter, const QRectF& rect)
 
     if (overlays_.isEmpty()) return;
 
-    // Draw fractional scene-space contours independently from the pixmap.
-    // Cosmetic width keeps the overlay a clean approximately one-device-pixel
-    // line, even when the image underneath is magnified with nearest-neighbor.
+    // 独立于 pixmap 绘制场景坐标中的小数轮廓；装饰线宽使叠加层保持约一个设备像素
+    // 的干净线条，即使底图使用最近邻放大也不变粗。
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);
     painter->setBrush(Qt::NoBrush);

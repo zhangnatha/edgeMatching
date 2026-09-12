@@ -92,8 +92,7 @@ SupportPixels buildSupportPixels(const T_T::MatchResult& result,
     if (!model || model->templates.empty() || !model->templates[0] ||
         model->templates[0]->shape_angle.empty()) return support;
 
-    // Internal shape angles have the opposite sign of the public result angle
-    // after _searchTemplateSingleScale performs its final angle conversion.
+    // 内部形状角在 _searchTemplateSingleScale 完成最终角度转换后，与公开结果角符号相反。
     const double shapeAngle = poseAngleIsOutput ? -result.pose.angle : result.pose.angle;
     const T_T::ShapeAngle::Ptr* selected = nullptr;
     double bestDistance = std::numeric_limits<double>::infinity();
@@ -252,12 +251,9 @@ bool SearchTemplate::_maxOverlap(const cv::RotatedRect rect1, const cv::RotatedR
 
 std::vector<T_T::MatchResult> SearchTemplate::_filterNearCandidates(const std::vector<T_T::MatchResult>& input)
 {
-    // A coarse pyramid peak is quantised both spatially and angularly.  Do
-    // not collapse a genuinely different orientation into the strongest
-    // nearby peak: a symmetric/partially visible object can produce two
-    // valid modes (most notably a 180-degree reversal).  Keep a small number
-    // of angular clusters per coarse spatial neighbourhood; the final L0
-    // support/NMS pass remains responsible for selecting one physical match.
+    // 粗金字塔峰在空间和角度上都会量化。不要将真正不同的方向合并到附近最高峰：
+    // 对称或部分可见目标可能产生两个有效模态，尤其是相差 180 度的模态。每个粗层
+    // 空间邻域保留少量角度簇，最终由 L0 支撑带和 NMS 选择一个物理匹配。
     constexpr double kSpatialRadius = 6.0;
     constexpr double kAngularSeparation = 45.0;
     constexpr int kMaxAngularModes = 8;
@@ -312,9 +308,8 @@ std::vector<T_T::MatchResult> SearchTemplate::_filterMaxOverLapCandidates(
         CandidateSupport current{c, buildSupportPixels(c, model, pose_angle_is_output)};
         for (auto& r : result)
         {
-            // Distinct angle hypotheses may intentionally survive the coarse
-            // pyramid.  Once refined at L0, peaks with effectively the same
-            // center are duplicate reports of one physical instance.
+            // 不同角度假设可以有意穿过粗金字塔；在 L0 精化后，中心基本相同的峰
+            // 是同一物理实例的重复报告。
             const bool sameCenter = std::hypot(current.result.pose.x - r.result.pose.x,
                                                current.result.pose.y - r.result.pose.y) <= 5.0;
             const bool supportOverlap = !current.support.empty() && !r.support.empty() &&
@@ -325,12 +320,9 @@ std::vector<T_T::MatchResult> SearchTemplate::_filterMaxOverLapCandidates(
                             legacyBoxForResult(r.result, model, pose_angle_is_output), max_ovelap);
             if (sameCenter || supportOverlap || boxOverlap)
             {
-                // At L0, two opposite-angle hypotheses can describe the same
-                // partially visible object.  Score alone may prefer the
-                // polarity-consistent false mode because the true mode has
-                // more of its support clipped.  Use the measured support
-                // coverage as a tie-breaker for this specific angular case;
-                // complete, single-mode matches retain the score ordering.
+                // 在 L0，两个相反角度假设可能描述同一部分可见目标。仅按得分排序时，
+                // 因真实模态支撑被裁剪更多，极性一致的错误模态可能占优；此处仅对
+                // 该角度情况用实测支撑覆盖率打破平局，完整单模态仍按得分排序。
                 if (sameCenter && angleDistance(current.result.pose.angle,
                                                  r.result.pose.angle) >= 90.0)
                 {
@@ -507,7 +499,7 @@ void SearchTemplate::_getFeature(
     (void)useSIMD;
 #endif
 
-    // Portable scalar fallback used when SIMD is disabled or not requested.
+    // SIMD 关闭或未请求时使用的可移植标量回退路径。
     for (int i = 1; i < width - 1; i++)
     {
         for (int j = 1; j < height - 1; j++)
@@ -993,10 +985,8 @@ void SearchTemplate::_coarseMatching(
                     SumOfCoords = visibleCount;
                     PartialScore = PartialSum / SumOfCoords; // 归一化
 
-                    // Preserve the documented greediness/speed tradeoff for the
-                    // legacy polarity metric, but only where the denominator is
-                    // known. Partial and masked candidates always use the strict
-                    // bound below and can therefore not be discarded heuristically.
+                    // 仅在分母已知时保留旧极性度量中记录的贪婪度/速度折中；部分可见
+                    // 和带掩模候选始终使用下面的严格上界，不能被启发式丢弃。
                     if (!variable_visibility_ && metric_ == I_I::USE_POLARITY && greediness < 1.0f &&
                         PartialScore < std::min(min_score - 1.0f +
                                                    normalizedGreediness * SumOfCoords,
@@ -1006,9 +996,8 @@ void SearchTemplate::_coarseMatching(
                         break;
                     }
 
-                    // Strict score upper bound. This is only valid when the complete
-                    // model bounding box lies in the valid mask, hence V is known to
-                    // equal N before all points have been visited.
+                    // 严格得分上界。仅当完整模型外框位于有效掩模内时成立，此时在
+                    // 遍历全部点之前即可知 V 等于 N。
                     if (fixedDenominator)
                     {
                         const int remaining = point_size - m - 1;
@@ -1101,9 +1090,8 @@ void SearchTemplate::_coarseMatching(
     // 根据分数比值，将明显较弱的同一模态排除。但空间相近且角度
     // 显著不同的候选必须继续向 L0 传播；粗层的量化/遮挡可能使正确
     // 的 180 度模态暂时得分较低，不能在这里用单一全局分数截断。
-    // Opposite orientations of an asymmetric object can shift the coarse
-    // correlation peak by several pixels.  Allow the angular companion mode
-    // to survive that quantisation; L0 support NMS resolves the final pose.
+    // 非对称目标的相反方向可能使粗相关峰偏移数个像素；允许角度伴随模态穿过该
+    // 量化阶段，最终位姿由 L0 支撑带 NMS 决定。
     constexpr double kSpatialRadius = 16.0;
     constexpr double kAngularSeparation = 45.0;
     for (const auto& rn : resultsfilter)
@@ -1238,9 +1226,8 @@ bool SearchTemplate::_coarse2FineMatching(
     SearchRegion.start_Y = std::max(0, predicted_y - refinement_radius);
     SearchRegion.end_X = std::min(cropImgW, predicted_x + refinement_radius + 1);
     SearchRegion.end_Y = std::min(cropImgH, predicted_y + refinement_radius + 1);
-    // Cover the angular sampling step of the immediately coarser level plus
-    // one two-degree bin for coarse-image quantisation.  A fixed +/-4 window
-    // can strand a valid hypothesis at the boundary when refining from level 3.
+    // 覆盖直接粗层的角度采样步长，并增加一个两度量化区间。固定的 +/-4 度窗口
+    // 在从 L3 精化时可能使有效假设卡在边界。
     const double angle_refinement_radius = std::max(
         model_id->template_cfg.angle_step, 2.0 * (py_levels + 2));
     SearchRegion.start_angle = MatchAngle - angle_refinement_radius;
@@ -1291,7 +1278,7 @@ bool SearchTemplate::_coarse2FineMatching(
         1,
         1,
         cv::Scalar(0, 0, 255));
-    showVisualization("精匹配", cropImageBGR, 0);
+    showVisualization("Fine matching", cropImageBGR, 0);
 #endif
     // 坐标变换：
     // 精匹配得到结果转换至原图上
@@ -1358,9 +1345,8 @@ bool SearchTemplate::_searchTemplateSingleScale(
     bool sort_by_y,
     std::vector<T_T::MatchResult>& result_list)
 {
-    // Compatibility note: angle_extent is historically named, but is an
-    // absolute inclusive stop angle throughout this implementation. The CLI
-    // --angle-end and TemplateCfg::angle_end use the same convention.
+    // 兼容说明：angle_extent 虽是历史名称，但在本实现中始终表示包含终点的绝对
+    // 终止角；CLI 的 --angle-end 和 TemplateCfg::angle_end 使用相同约定。
 #if COSTTIME_SHOW
     auto start_prepare = std::chrono::high_resolution_clock::now();
 #endif
@@ -1424,9 +1410,8 @@ bool SearchTemplate::_searchTemplateSingleScale(
 
         if (top > 0 || bottom > 0 || left > 0 || right > 0)
         {
-            // Replicate intensity to avoid an artificial gradient at the image
-            // boundary. The zero-padded mask below still excludes all pixels
-            // outside the original image from visibility and scoring.
+            // 复制边缘强度以避免图像边界产生人工梯度；下面的零填充掩模仍会将原图
+            // 外像素排除在可见性和评分之外。
             cv::copyMakeBorder(Image, ImgBordered, top, bottom, left, right,
                                cv::BORDER_REPLICATE);
             cv::copyMakeBorder(smaskimage, MaskBordered, top, bottom, left, right,
@@ -1554,7 +1539,7 @@ bool SearchTemplate::_searchTemplateSingleScale(
             cv::FONT_HERSHEY_DUPLEX,
             0.5,
             cv::Scalar(0, 0, 255));
-        showVisualization("粗匹配结果", pImageBGR, 0);
+        showVisualization("Coarse matching result", pImageBGR, 0);
 #endif
         //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
         //+++++++++++++++++++++++++待测图像非金字塔最高层精匹配作用域+++++++++++++++++++++++++++++
@@ -1577,12 +1562,9 @@ bool SearchTemplate::_searchTemplateSingleScale(
                 cv::Mat pImage = imagePyr[N];
                 cv::Mat pMask  = maskPyr[N];
 
-                // The user threshold is the final L0 acceptance criterion.  A
-                // downsampled proposal can score lower at an intermediate
-                // pyramid level solely because of quantisation/blur, even
-                // though its L0 score is good enough.  Keep intermediate
-                // refinement permissive so that such a proposal can reach L0;
-                // only L0 uses the requested threshold for acceptance.
+                // 用户阈值是最终 L0 接受标准。降采样候选可能仅因量化或模糊在中间层
+                // 得分较低，但其 L0 得分仍可能足够；中间精化保持宽松，使候选能够
+                // 到达 L0，只有 L0 使用请求的阈值进行接受判断。
                 const float level_min_score = N == 0
                     ? min_score
                     : std::max(0.4f, min_score - 0.20f);
@@ -1623,10 +1605,8 @@ bool SearchTemplate::_searchTemplateSingleScale(
                     ResultListLow.score, 1.0, -1, ResultListLow.visible_ratio,
                     ResultListLow.matched_ratio
                 };
-                // A valid partial target may have its geometric center outside the
-                // image. Visibility and score already describe whether enough of
-                // the template is present, so rejecting an out-of-image center
-                // incorrectly drops legitimate border matches.
+                // 合法的部分目标几何中心可能位于图像外。可见率和得分已经说明模板
+                // 是否足够存在，拒绝图像外中心会错误丢弃合法边界匹配。
                 std::lock_guard<std::mutex> resultGuard(locker);
                 TempResult.push_back(Po);
             }
@@ -1645,9 +1625,8 @@ bool SearchTemplate::_searchTemplateSingleScale(
         //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
         findResult = _filterMaxOverLapCandidates(TempResult, max_overlap, model_id, false);
 
-        // Refine only candidates that survived NMS. Performing six bilinear score
-        // evaluations for every coarse candidate would erase the benefit of the
-        // integer/SIMD search path.
+        // 仅精化通过 NMS 的候选；对每个粗候选执行六次双线性评分会抵消整数/SIMD
+        // 搜索路径的性能收益。
         if (subpixel_refine_)
         for (auto& candidate : findResult)
         {
@@ -1930,8 +1909,8 @@ void refineSubpixelPosition(T_T::MatchResult& result, const T_T::ShapeInfo::Ptr&
         result.pose.x += dx;
         result.pose.y += dy;
         result.pose.angle = refinedAngle;
-        // Keep the discrete match score stable: interpolation refines the pose,
-        // while its bilinear/sample-limited objective is only an internal optimizer.
+        // 保持离散匹配得分稳定：插值用于精化位姿，双线性/采样受限目标函数只作为
+        // 内部优化量。
         result.score = original.score;
         result.visible_ratio = refined.visible_ratio;
         result.matched_ratio = refined.matched_ratio;
@@ -2105,9 +2084,8 @@ bool SearchTemplate::_searchTemplatePrepared(
         if (!suppressed) kept.push_back(CandidateSupport{candidate, candidateSupport});
     }
 
-    // HALCON-style interpolation in the scale dimension. The expensive image
-    // searches remain discrete; only NMS survivors are associated with the same
-    // spatial peak at the immediately adjacent scales and fitted quadratically.
+    // 按 HALCON 风格在尺度维度插值。耗时的图像搜索仍为离散搜索，仅将 NMS 保留项
+    // 与相邻尺度的同一空间峰关联并进行二次拟合。
     if (scale_cfg.subpixel_refine &&
         scale_cfg.scale_max - scale_cfg.scale_min >= 2.0 * scale_cfg.scale_step - epsilon)
     {
@@ -2237,9 +2215,8 @@ bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi
     std::sort(merged.begin(), merged.end(), [](const T_T::MatchResult& a,
                                                const T_T::MatchResult& b)
     { return a.score > b.score; });
-    // Use feature support for final NMS.  Different template IDs participate
-    // through support only; legacy boxes remain a low-confidence fallback
-    // within one template, where they remove weak duplicate peaks.
+    // 最终 NMS 使用特征支撑带。不同模板 ID 只通过支撑带参与；旧外框仅在同一模板
+    // 内作为低置信度回退，用于移除弱重复峰。
     struct CandidateSupport { T_T::MatchResult result; SupportPixels support; };
     std::vector<CandidateSupport> kept;
     for (const auto& candidate : merged)
@@ -2292,9 +2269,8 @@ bool SearchTemplate::searchTemplate(cv::Mat image, cv::Mat s_mask_image, ROI roi
 //初始化各层金字塔的模板信息
 void initialShapeModelPyd(T_T::ShapeInfo::Ptr shape_info_vec, int angle_start, int angle_stop, double angle_step)
 {
-    // Canonical zero is retained at index 0 for the legacy matcher. Generate
-    // the requested interval using an integer count, then append the exact
-    // endpoint so floating-point accumulation cannot miss or overshoot it.
+    // 保留 canonical 零角度作为旧匹配器的第一个元素。按整数数量生成请求区间，
+    // 再追加精确终点，避免浮点累积导致漏掉或超过终点。
     shape_info_vec->shape_angle.clear();
     const double epsilon = std::max(1e-9, std::abs(angle_step) * 1e-9);
     auto append = [&](double angle) {
@@ -2315,7 +2291,7 @@ void initialShapeModelPyd(T_T::ShapeInfo::Ptr shape_info_vec, int angle_start, i
         const double angle = angle_start + static_cast<double>(k) * angle_step;
         if (angle < angle_stop - epsilon) append(angle);
     }
-    // Avoid endpoint duplication when the final regular sample lands there.
+    // 当最后一个常规采样已经落在终点时避免重复添加。
     if (shape_info_vec->shape_angle.empty() ||
         std::abs(shape_info_vec->shape_angle.back()->angle - angle_stop) > epsilon)
         append(static_cast<double>(angle_stop));
@@ -2649,8 +2625,7 @@ T_T::Template::Ptr SearchTemplate::loadModelFileFromBinary(std::string path)
         temp->templates.push_back(temp_shapeinfo);
     }
 
-    // Optional append-only metadata. Legacy binaries end at the feature
-    // payload and therefore cleanly default to CURRENT.
+    // 可选的追加元数据。旧二进制在特征负载处结束，因此可以安全地默认使用 CURRENT。
     uint32_t metadataMagic = 0;
     uint32_t metadataVersion = 0;
     uint8_t edgeMethod = 0;
@@ -2836,15 +2811,15 @@ cv::Scalar hsvToBgr(double h, double s, double v)
 cv::Scalar resultDrawingColor(const T_T::MatchResult& /*result*/, size_t index,
                               int /*fallbackTemplateId*/)
 {
-    // Generate a unique, distinct color for each detected target.
-    // Explicitly exclude the green and red semantic point colors used for contour visualization:
-    // Span A: [180°, 325°] (Cyan, Azure, Blue, Violet, Magenta, Deep Pink) -> 145°
-    // Span B: [25°, 50°] (Orange, Amber, Gold) -> 25°
+    // 为每个检测目标生成唯一且彼此区分的颜色。
+    // 明确排除轮廓可视化使用的绿色和红色语义点颜色：
+    // 区间 A：[180°，325°]（青、天蓝、蓝、紫、洋红、深粉）共 145°。
+    // 区间 B：[25°，50°]（橙、琥珀、金色）共 25°。
     const double spanA = 145.0;
     const double spanB = 25.0;
     const double totalSpan = spanA + spanB; // 170.0 degrees
 
-    // Use golden ratio low-discrepancy sequence so consecutive indices are maximally separated
+    // 使用黄金比例低差异序列，使相邻索引的颜色尽可能分散。
     const double phi = 0.6180339887498948482;
     double f = std::fmod(static_cast<double>(index) * phi, 1.0);
     if (f < 0.0) f += 1.0;
@@ -2934,16 +2909,14 @@ void drawCompactRotatedLabel(cv::Mat& image, const cv::RotatedRect& frame,
                    cv::BORDER_CONSTANT, cv::Scalar(0));
 
     const int gap = std::max(1, static_cast<int>(std::round(fontScale * 2.0)));
-    // The label's near short edge touches the selected frame corner, extends
-    // along the adjacent long edge, and sits just outside the frame.
+    // 标签的近端短边贴合选定的框角，沿相邻长边延伸，并位于外框外侧。
     const cv::Point2f anchor = vertices[corner] +
         edgeDirection * static_cast<float>(0.5 * label.cols) +
         outward * static_cast<float>(0.5 * label.rows + gap);
     cv::Rect target(cvRound(anchor.x - rotatedLabel.cols * 0.5f),
                     cvRound(anchor.y - rotatedLabel.rows * 0.5f),
                     rotatedLabel.cols, rotatedLabel.rows);
-    // Shift the complete label into the image where possible.  The final
-    // intersection still guards against frames extending beyond the image.
+    // 尽可能将完整标签移入图像；最终相交检查仍会保护超出图像的外框。
     if (target.x < margin) target.x = margin;
     if (target.y < margin) target.y = margin;
     if (target.x + target.width > image.cols - margin)
@@ -3005,8 +2978,8 @@ void SearchTemplate::_drawMatchResultsImpl(cv::Mat& image, const cv::Mat& gradie
                     const float sx = gradientX.at<float>(y, x);
                     const float sy = gradientY.at<float>(y, x);
                     const float similarity = sx * point.edge_dx + sy * point.edge_dy;
-                    // Semantic contour colors are independent of the per-result box color:
-                    // green = strong, yellow = usable, red = poor or missing edge.
+                    // 轮廓语义颜色独立于每个结果的外框颜色：绿色表示强匹配，黄色表示
+                    // 可用，红色表示弱匹配或缺失边缘。
                     cv::Vec3b pointColor;
                     if (similarity >= 0.8f) pointColor = cv::Vec3b(0, 255, 0);
                     else if (similarity >= 0.4f) pointColor = cv::Vec3b(0, 255, 255);
@@ -3039,8 +3012,7 @@ void SearchTemplate::_drawMatchResultsImpl(cv::Mat& image, const cv::Mat& gradie
             cv::line(image, a, bpt, color, 2, cv::LINE_AA);
         }
 
-        // The arrow is the template's positive x-axis and therefore makes the
-        // otherwise symmetric rotated rectangle's angle direction unambiguous.
+        // 箭头表示模板正 x 轴，因此可消除旋转矩形本身的对称性并明确角度方向。
         const double direction = -result.pose.angle * CV_PI / 180.0;
         const float arrowLength = std::max(18.0f, std::min(80.0f,
             static_cast<float>(model->template_cfg.image_width * result.scale * 0.35)));

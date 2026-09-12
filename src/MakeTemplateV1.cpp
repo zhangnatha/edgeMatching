@@ -12,9 +12,8 @@ using namespace SM_V1;
 
 namespace
 {
-// Bilinear sampling is deliberately kept local to the Devernay backend.  The
-// matcher continues to use its dense gradient field, rather than this sparse
-// NMS response, so fractional-pixel matching remains supported.
+// 双线性采样仅在 Devernay 后端内部使用；匹配器继续使用稠密梯度场而不是稀疏
+// NMS 响应，因此仍支持亚像素匹配。
 bool sampleMagnitude(const std::vector<float>& magnitude, int width, int height,
                      double x, double y, float& value)
 {
@@ -32,9 +31,8 @@ bool sampleMagnitude(const std::vector<float>& magnitude, int width, int height,
     return std::isfinite(value);
 }
 
-// Independent implementation of the Devernay-style subpixel edge detector:
-// smoothed image -> central-difference gradient -> interpolated NMS -> Canny
-// hysteresis -> quadratic localization along the gradient normal.
+// 独立实现 Devernay 风格亚像素边缘检测：平滑图像 -> 中心差分梯度 -> 插值 NMS
+// -> Canny 滞后连接 -> 沿梯度法线进行二次定位。
 std::vector<T_T::TemplateFeatures> extractDevernayFeatures(
     const cv::Mat& image, const cv::Mat& mask, int minContrast, int maxContrast)
 {
@@ -81,8 +79,7 @@ std::vector<T_T::TemplateFeatures> extractDevernayFeatures(
         }
     if (!(maxMagnitude > 1e-6f) || !std::isfinite(maxMagnitude)) return features;
 
-    // Interpolated non-maximum suppression in the continuous gradient-normal
-    // direction, instead of quantizing to 0/45/90/135 degrees.
+    // 沿连续梯度法线方向执行插值非极大值抑制，不将方向量化为 0/45/90/135 度。
     std::vector<float> nms(count, 0.0f);
     for (int y = 1; y < height - 1; ++y)
         for (int x = 1; x < width - 1; ++x)
@@ -98,8 +95,7 @@ std::vector<T_T::TemplateFeatures> extractDevernayFeatures(
             if (mag >= minus && mag >= plus) nms[index] = mag;
         }
 
-    // Thresholds retain the existing public convention: contrast values are
-    // percentages of the strongest gradient (0..255).
+    // 保持现有公开约定：对比度取最强梯度的百分比，范围为 0 到 255。
     const float low = static_cast<float>(std::max(0, minContrast)) / 255.0f * maxMagnitude;
     const float high = static_cast<float>(std::max(0, maxContrast)) / 255.0f * maxMagnitude;
     std::vector<unsigned char> state(count, 0); // 1=weak, 2=strong/connected
@@ -131,11 +127,9 @@ std::vector<T_T::TemplateFeatures> extractDevernayFeatures(
         }
     }
 
-    // Preserve small, real disconnected contours (for example holes after
-    // pyramid reduction).  A global high threshold can seed the outer edge
-    // but discard a weaker closed edge because it has no strong neighbour.
-    // Promote only sufficiently long weak components with a meaningful local
-    // maximum; isolated noise remains rejected.
+    // 保留真实的分离小轮廓（例如金字塔缩小后的孔洞）。全局高阈值可能生成外边界
+    // 种子，却因缺少强邻居而丢弃较弱闭合边；仅提升长度足够且局部峰值有意义的
+    // 弱分量，孤立噪声仍然拒绝。
     std::vector<unsigned char> weakVisited(count, 0);
     const float componentFloor = std::max(low, high * 0.35f);
     for (int y = 1; y < height - 1; ++y)
@@ -300,9 +294,8 @@ void CreateTemplate::_extractShapeInfo(
 
     if (edge_method_ == T_T::EDGE_DEVERNAY)
     {
-    // Devernay features are already localized in image coordinates.  Keep the
-    // same center-origin model representation and unit gradient convention as
-    // the CURRENT backend so serialized models and rotated caches are shared.
+    // Devernay 特征已经定位到图像坐标；沿用 CURRENT 后端的中心原点模型表示和
+    // 单位梯度约定，以共享序列化模型和旋转缓存。
     const cv::Mat mask_view(height, width, CV_8UC1, mask_data);
     const std::vector<T_T::TemplateFeatures> devernay_features =
         extractDevernayFeatures(image_data, mask_view, min_contrast, max_contrast);
@@ -511,9 +504,8 @@ void CreateTemplate::_extractShapeInfo(
                     float magnitude = (!(std::fabs(magnitude_origin) < 1e-6)) ? (1 / magnitude_origin) : 0;
                     const float nx = fdx * magnitude;
                     const float ny = fdy * magnitude;
-                    // Localize the edge maximum along its gradient normal with a
-                    // three-sample quadratic fit. The bounded offset keeps noisy
-                    // or flat profiles from moving a feature into another pixel.
+                    // 使用三个采样点沿梯度法线进行二次拟合定位边缘极值；有界偏移可
+                    // 防止噪声或平坦剖面将特征移入其他像素。
                     const auto sampleMagnitude = [&](double x, double y) {
                         const int x0 = std::max(0, std::min(width - 2,
                             static_cast<int>(std::floor(x))));
@@ -532,9 +524,8 @@ void CreateTemplate::_extractShapeInfo(
                     const float after = sampleMagnitude(i + nx, j + ny);
                     const float denominator = before - 2.0f * magnitude_origin + after;
                     float offset = 0.0f;
-                    // CANNY_PIXEL deliberately keeps the NMS pixel location.
-                    // CURRENT retains the historical normal-direction
-                    // parabolic subpixel correction.
+                    // CANNY_PIXEL 保留 NMS 像素位置；CURRENT 保留历史的法线方向
+                    // 抛物线亚像素修正。
                     if (edge_method_ != T_T::EDGE_CANNY_PIXEL && denominator < -1e-6f)
                         offset = std::max(-0.5f, std::min(0.5f,
                             0.5f * (before - after) / denominator));
@@ -1435,9 +1426,8 @@ bool CreateTemplate::createTemplate(
             const int level_width = (tempMat.cols + scale - 1) / scale;
             const int level_height = (tempMat.rows + scale - 1) / scale;
             const size_t feature_count = model_id->templates[level]->shape_angle[0]->shape_point.size();
-            // Keep the established quality floor (40) for automatic models;
-            // the HALCON-compatible hard safety requirement is four points,
-            // so sparse levels still back off rather than being exposed.
+            // 自动模型保留既有质量下限 40；兼容 HALCON 的安全要求是至少四个点，
+            // 因此稀疏层会回退而不会暴露给匹配器。
             if (std::min(level_width, level_height) >= 8 && feature_count >= 40) { break; }
             --model_id->template_cfg.num_levels;
         }
@@ -1593,8 +1583,7 @@ bool CreateTemplate::saveModelFile2Binary(T_T::Template::Ptr model_id, std::stri
         }
     }
 
-    // Append-only metadata keeps the legacy binary payload byte-for-byte
-    // compatible with older readers.
+    // 只追加元数据，保证旧版二进制负载与旧读取器保持逐字节兼容。
     const uint32_t metadataMagic = 0x534D4554u; // "SMET"
     const uint32_t metadataVersion = 2u;
     const uint8_t edgeMethod = static_cast<uint8_t>(model_id->template_cfg.edge_method);

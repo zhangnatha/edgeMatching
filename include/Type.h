@@ -17,9 +17,8 @@ namespace I_I
 
 namespace T_T
 {
-    // The historical model coordinate system is image-centre based.  New
-    // models may opt into the valid-domain centroid, while old JSON/BIN files
-    // remain IMAGE_CENTER when this field is absent.
+    // 历史模型坐标系以图像中心为原点；新模型可选择有效域质心，旧 JSON/BIN 文件
+    // 缺少该字段时仍使用 IMAGE_CENTER。
     enum TemplateOriginMode
     {
         ORIGIN_IMAGE_CENTER = 0,
@@ -30,7 +29,7 @@ namespace T_T
     {
         CURRENT = 0,
         DEVERNAY = 1,
-        // Appended for binary/JSON compatibility: legacy values remain stable.
+        // 追加字段以保持二进制和 JSON 兼容，历史枚举值保持不变。
         CANNY_PIXEL = 2,
         EDGE_CURRENT = CURRENT,
         EDGE_DEVERNAY = DEVERNAY,
@@ -56,8 +55,7 @@ namespace T_T
         double origin_x; //原图像坐标中的模板原点 X
         double origin_y; //原图像坐标中的模板原点 Y
 
-        // createTemplate reads id before it overwrites the remaining fields,
-        // so a newly allocated configuration must be fully initialized.
+        // createTemplate 会先读取 id 再覆盖其余字段，因此新分配的配置必须完整初始化。
         TemplateCfg()
             : num_levels(0), angle_start(0), angle_end(0), angle_step(1.0),
               create_otsu(false), max_contrast(0), min_contrast(0), id(1),

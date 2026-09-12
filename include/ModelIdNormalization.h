@@ -14,10 +14,8 @@ struct ModelIdAssignment
     int runtime_id = 0;
 };
 
-// Normalize IDs only on the in-memory model objects before a multi-model
-// search.  Source files are never modified.  Existing positive unique IDs
-// are preserved; invalid or duplicate IDs receive the smallest unused
-// positive integer in deterministic input order.
+// 多模板搜索前仅规范化内存中的模型 ID，不修改源文件。已有的正数唯一 ID 保留；
+// 非法或重复 ID 按输入顺序分配尚未使用的最小正整数。
 inline bool normalizeTemplateIds(const std::vector<T_T::Template::Ptr>& models,
                                  std::vector<ModelIdAssignment>& assignments,
                                  std::string* error = nullptr)

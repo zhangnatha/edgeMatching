@@ -179,9 +179,8 @@ QVector<ImageView::ContourPath> traceFeatureGraph(const std::vector<Point>& poin
         return lhs.cost < rhs.cost;
     });
 
-    // First isolate spatially connected contour components.  Edge selection
-    // is then performed independently per component, so degree saturation on
-    // the dense external boundary cannot consume a hole's neighbours.
+    // 先隔离空间连通的轮廓分量，再对每个分量独立选边，避免稠密外边界的度数饱和
+    // 消耗孔洞邻接点。
     std::vector<int> parent(points.size());
     std::vector<int> rank(points.size(), 0);
     for (int i = 0; i < static_cast<int>(points.size()); ++i) parent[i] = i;
@@ -243,11 +242,10 @@ QVector<ImageView::ContourPath> traceFeatureGraph(const std::vector<Point>& poin
     };
     for (const auto& component : componentCandidates) {
         if (component.empty()) continue;
-        // Reciprocal nearest links establish the stable backbone first.
+        // 先用互为最近邻的连接建立稳定骨架。
         for (const int index : component)
             if (isMutualNearest(index)) acceptCandidate(candidates[index]);
-        // Remaining links bridge legitimate sparse gaps without allowing a
-        // component to borrow an edge from a different contour.
+        // 剩余连接用于跨越合法稀疏间隙，但不允许分量借用其他轮廓的边。
         for (const int index : component)
             if (!isMutualNearest(index)) acceptCandidate(candidates[index]);
     }
@@ -337,9 +335,8 @@ QVector<ImageView::ContourPath> buildTemplateContours(
     }
     if (points.size() < 2) return {};
 
-    // ShapePoint is already a single localized edge sample.  No raster mask,
-    // morphology, or findContours is used here, so a one-pixel edge ring can
-    // never turn into the two sides of a thick raster contour.
+    // ShapePoint 已经是单个定位后的边缘采样点；这里不使用栅格掩模、形态学或
+    // findContours，因此单像素边缘环不会被变成厚栅格轮廓的两条边。
     const double cellSize = 1.5;
     std::unordered_map<CellKey, std::vector<int>, CellHash> cells;
     cells.reserve(points.size() * 2 + 1);

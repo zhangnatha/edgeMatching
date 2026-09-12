@@ -8,16 +8,13 @@
 namespace ContourBuilder
 {
 
-// Reconstruct display-only vector contours from the unordered canonical
-// feature set.  The reconstruction keeps the original feature indices while
-// tracing so nested raster boundaries can be de-duplicated without removing
-// real holes.
+// 从无序 canonical 特征集合重建仅用于显示的矢量轮廓；追踪时保留原始特征索引，
+// 以便去除嵌套栅格边界的重复线，同时不删除真实孔洞。
 QVector<ImageView::ContourPath> buildTemplateContours(
     const cv::Mat& image, const T_T::Template::Ptr& model);
 
-// Build contours from the canonical shape information at an explicit
-// pyramid level.  Coordinates are interpreted relative to that level's
-// image centre, exactly as they are stored by CreateTemplate.
+// 根据指定金字塔层的 canonical 形状信息构建轮廓；坐标相对于该层图像中心解释，
+// 与 CreateTemplate 的存储方式完全一致。
 QVector<ImageView::ContourPath> buildTemplateContours(
     const cv::Mat& image, const T_T::Template::Ptr& model, int level);
 

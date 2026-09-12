@@ -103,7 +103,7 @@ void drawInfoPanel(cv::Mat& image, double elapsedMs,
 {
     if (image.empty()) return;
 
-    // Keep the panel legible on both small fixtures and large camera frames.
+    // 在小尺寸样例和大幅相机图像上都保持信息栏清晰可读。
     const int shortSide = std::max(1, std::min(image.cols, image.rows));
     const int pad = std::max(10, static_cast<int>(std::round(shortSide * 0.025)));
     const int lineGap = std::max(4, static_cast<int>(std::round(shortSide * 0.010)));
@@ -132,9 +132,8 @@ void drawInfoPanel(cv::Mat& image, double elapsedMs,
     int baseline = 0;
     cv::Size sample;
     int lineHeight = 0;
-    // Preserve the source image height. If many matches exist, details flow
-    // into additional columns in the left panel instead of extending the
-    // canvas downward or shrinking into unreadable text.
+    // 保持原图高度不变；结果较多时在左侧信息栏增加列，而不是向下扩展画布
+    // 或缩小文字导致无法阅读。
     while (fontScale > 0.12)
     {
         thickness = std::max(1, static_cast<int>(std::round(fontScale * 1.7)));
@@ -172,8 +171,7 @@ void drawInfoPanel(cv::Mat& image, double elapsedMs,
     cv::Mat expanded(image.rows, image.cols + panelWidth, image.type(),
                      cv::Scalar(26, 31, 42));
     image.copyTo(expanded(cv::Rect(panelWidth, 0, image.cols, image.rows)));
-    // A subtle divider keeps the panel visually separate without competing
-    // with the colored result frames in the image area.
+    // 使用细分隔线区分信息栏和图像区域，同时避免与彩色结果框争夺视觉重点。
     cv::line(expanded, cv::Point(panelWidth, 0), cv::Point(panelWidth, image.rows - 1),
              cv::Scalar(70, 78, 92), 1, cv::LINE_AA);
 
