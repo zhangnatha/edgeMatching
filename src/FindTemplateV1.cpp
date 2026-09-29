@@ -879,6 +879,11 @@ void SearchTemplate::_coarseMatching(
     _getFeature(search_image, mask_image, width, height, pBufGradX, pBufGradY,
                 pBufMagnitude, use_simd_ && avx2Supported());
 
+    double maskMin = 0.0, maskMax = 0.0;
+    if (!mask_image.empty()) cv::minMaxLoc(mask_image, &maskMin, &maskMax);
+    const bool fullMask = !mask_image.empty() && maskMin == 255.0 && maskMax == 255.0 &&
+                          min_visible_ratio_ >= 1.0;
+
     cv::Mat validMask, validIntegral;
     if (variable_visibility_)
     {
@@ -921,21 +926,45 @@ void SearchTemplate::_coarseMatching(
             : 0.0f;
 
         std::vector<int> rel_x(point_size), rel_y(point_size);
+        std::vector<float> tmpl_dx, tmpl_dy;
+        std::vector<int> rel_offsets;
+        int min_rel_x = INT_MAX, max_rel_x = INT_MIN;
+        int min_rel_y = INT_MAX, max_rel_y = INT_MIN;
         for (int m = 0; m < point_size; ++m)
         {
             rel_x[m] = cvRound(shape_angle->shape_point[m].x);
             rel_y[m] = cvRound(shape_angle->shape_point[m].y);
+            min_rel_x = std::min(min_rel_x, rel_x[m]);
+            max_rel_x = std::max(max_rel_x, rel_x[m]);
+            min_rel_y = std::min(min_rel_y, rel_y[m]);
+            max_rel_y = std::max(max_rel_y, rel_y[m]);
+        }
+        if (fullMask)
+        {
+            rel_offsets.resize(point_size);
+            tmpl_dx.resize(point_size);
+            tmpl_dy.resize(point_size);
+            for (int m = 0; m < point_size; ++m)
+            {
+                rel_offsets[m] = rel_y[m] * width + rel_x[m];
+                tmpl_dx[m] = shape_angle->shape_point[m].edge_dx;
+                tmpl_dy[m] = shape_angle->shape_point[m].edge_dy;
+            }
         }
 
         // 更新搜索区域(根据不同角度模板进行搜索)
         // 不同角度下模板特征的外包络框大小不一致
         // 在待测图像上，遍历搜索时，防止目标贴边压不上的可能
-        const int search_start_x = std::max(left, search_region.start_X);
-        const int search_start_y = std::max(top, search_region.start_Y);
-        const int search_end_x = std::min(width - 1, search_region.end_X > 0
-                                                         ? search_region.end_X : width - 1);
-        const int search_end_y = std::min(height - 1, search_region.end_Y > 0
-                                                          ? search_region.end_Y : height - 1);
+        const int search_start_x = std::max(std::max(left, search_region.start_X),
+                                            fullMask ? -min_rel_x : INT_MIN);
+        const int search_start_y = std::max(std::max(top, search_region.start_Y),
+                                            fullMask ? -min_rel_y : INT_MIN);
+        const int search_end_x = std::min(
+            std::min(width - 1, search_region.end_X > 0 ? search_region.end_X : width - 1),
+            fullMask ? width - 1 - max_rel_x : width - 1);
+        const int search_end_y = std::min(
+            std::min(height - 1, search_region.end_Y > 0 ? search_region.end_Y : height - 1),
+            fullMask ? height - 1 - max_rel_y : height - 1);
 
         for (int i = search_start_x; i <= search_end_x; i++) //搜索范围x
         {
@@ -962,19 +991,25 @@ void SearchTemplate::_coarseMatching(
                     float iSx = 0;
                     float iSy = 0;
 
-                    curX = i + rel_x[m]; //模板X坐标
-                    curY = j + rel_y[m]; //模板Y坐标
-
-                    if (curX < 0 || curY < 0 || curX > width - 1 || curY > height - 1)
+                    int offSet = 0;
+                    if (fullMask)
                     {
-                        continue; //如果模板超出搜索图像边界范围，跳出继续，加速
+                        offSet = j * width + i + rel_offsets[m];
                     }
-                    if (mask_image.at<unsigned char>(curY, curX) != 255) continue;
+                    else
+                    {
+                        curX = i + rel_x[m]; //模板X坐标
+                        curY = j + rel_y[m]; //模板Y坐标
+                        if (curX < 0 || curY < 0 || curX > width - 1 || curY > height - 1)
+                        {
+                            continue; //如果模板超出搜索图像边界范围，跳出继续，加速
+                        }
+                        if (mask_image.at<unsigned char>(curY, curX) != 255) continue;
+                        offSet = curY * width + curX;
+                    }
                     ++visibleCount;
-                    iTx = shape_angle->shape_point[m].edge_dx; //模板X方向的梯度
-                    iTy = shape_angle->shape_point[m].edge_dy; //模板Y方向的梯度
-
-                    int offSet = curY * width + curX;
+                    iTx = fullMask ? tmpl_dx[m] : shape_angle->shape_point[m].edge_dx;
+                    iTy = fullMask ? tmpl_dy[m] : shape_angle->shape_point[m].edge_dy;
                     iSx = pBufGradX[offSet]; //从搜索图像中获取对应的X梯度
                     iSy = pBufGradY[offSet]; //从搜索图像中获取对应的Y梯度
 
