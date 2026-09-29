@@ -500,9 +500,9 @@ void SearchTemplate::_getFeature(
 #endif
 
     // SIMD 关闭或未请求时使用的可移植标量回退路径。
-    for (int i = 1; i < width - 1; i++)
+    for (int j = 1; j < height - 1; j++)
     {
-        for (int j = 1; j < height - 1; j++)
+        for (int i = 1; i < width - 1; i++)
         {
             const int index = j * width + i;
             const float dx = float(pInput[index + 1]) - float(pInput[index - 1]);
@@ -653,9 +653,12 @@ bool SearchTemplate::_fineMatching(
 
         // 计算模板点的边界框以调整搜索区域，避免边界检查
         int min_dx = INT_MAX, max_dx = INT_MIN, min_dy = INT_MAX, max_dy = INT_MIN;
+        std::vector<int> rel_x(point_size), rel_y(point_size);
         for (int mm = 0; mm < point_size; ++mm) {
-            int dx = cvRound(shape_angle->shape_point[mm].x);
-            int dy = cvRound(shape_angle->shape_point[mm].y);
+            const int dx = cvRound(shape_angle->shape_point[mm].x);
+            const int dy = cvRound(shape_angle->shape_point[mm].y);
+            rel_x[mm] = dx;
+            rel_y[mm] = dy;
             min_dx = std::min(min_dx, dx);
             max_dx = std::max(max_dx, dx);
             min_dy = std::min(min_dy, dy);
@@ -671,8 +674,7 @@ bool SearchTemplate::_fineMatching(
         std::vector<int> rel_offsets(point_size);
         std::vector<float> tmpl_dx(point_size), tmpl_dy(point_size);
         for (int mm = 0; mm < point_size; ++mm) {
-            rel_offsets[mm] = cvRound(shape_angle->shape_point[mm].y) * width +
-                              cvRound(shape_angle->shape_point[mm].x);
+            rel_offsets[mm] = rel_y[mm] * width + rel_x[mm];
             tmpl_dx[mm] = shape_angle->shape_point[mm].edge_dx;
             tmpl_dy[mm] = shape_angle->shape_point[mm].edge_dy;
         }
@@ -758,8 +760,8 @@ bool SearchTemplate::_fineMatching(
                 {
                     for (int m = 0; m < point_size; ++m)
                     {
-                        const int curX = i + cvRound(shape_angle->shape_point[m].x);
-                        const int curY = j + cvRound(shape_angle->shape_point[m].y);
+                        const int curX = i + rel_x[m];
+                        const int curY = j + rel_y[m];
                         if (curX < 0 || curX >= width || curY < 0 || curY >= height) continue;
                         if (mask_image.at<unsigned char>(curY, curX) != 255) continue;
                         ++visibleCount;
@@ -918,6 +920,13 @@ void SearchTemplate::_coarseMatching(
             ? ((1.0f - greediness * min_score) / (1.0f - greediness)) / point_size
             : 0.0f;
 
+        std::vector<int> rel_x(point_size), rel_y(point_size);
+        for (int m = 0; m < point_size; ++m)
+        {
+            rel_x[m] = cvRound(shape_angle->shape_point[m].x);
+            rel_y[m] = cvRound(shape_angle->shape_point[m].y);
+        }
+
         // 更新搜索区域(根据不同角度模板进行搜索)
         // 不同角度下模板特征的外包络框大小不一致
         // 在待测图像上，遍历搜索时，防止目标贴边压不上的可能
@@ -953,8 +962,8 @@ void SearchTemplate::_coarseMatching(
                     float iSx = 0;
                     float iSy = 0;
 
-                    curX = i + cvRound(shape_angle->shape_point[m].x); //模板X坐标
-                    curY = j + cvRound(shape_angle->shape_point[m].y); //模板Y坐标
+                    curX = i + rel_x[m]; //模板X坐标
+                    curY = j + rel_y[m]; //模板Y坐标
 
                     if (curX < 0 || curY < 0 || curX > width - 1 || curY > height - 1)
                     {
