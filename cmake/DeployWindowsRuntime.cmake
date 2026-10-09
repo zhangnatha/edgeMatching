@@ -1,33 +1,80 @@
-# Place runtime dependencies alongside executables for direct Windows launches.
+# Run deployment on every build, even when the executable does not need relinking.
+set(_shape_match_runtime_script "${CMAKE_CURRENT_LIST_DIR}/DeployRuntimeDependencies.cmake")
 function(shape_match_deploy_windows_runtime target)
     if(NOT WIN32)
         return()
     endif()
+    set(search_dirs "$<TARGET_FILE_DIR:${target}>")
+    foreach(core_target MakeTemplate FindTemplate)
+        if(TARGET ${core_target})
+            list(APPEND search_dirs "$<TARGET_FILE_DIR:${core_target}>")
+        endif()
+    endforeach()
     set(opencv_runtime_targets ${OpenCV_LIBRARIES} ${OpenCV_LIB_COMPONENTS})
     list(REMOVE_DUPLICATES opencv_runtime_targets)
     foreach(dependency IN LISTS opencv_runtime_targets)
         if(TARGET "${dependency}")
             get_target_property(kind "${dependency}" TYPE)
             if(kind STREQUAL "SHARED_LIBRARY")
-                add_custom_command(TARGET ${target} POST_BUILD
-                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                        "$<TARGET_FILE:${dependency}>" "$<TARGET_FILE_DIR:${target}>")
+                list(APPEND search_dirs "$<TARGET_FILE_DIR:${dependency}>")
             endif()
         endif()
     endforeach()
-    if(MINGW)
-        foreach(name libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll libgomp-1.dll)
+    # Handles both install/bin and install/x64/mingw/bin, regardless of imported target type.
+    set(opencv_root "${OpenCV_DIR}")
+    foreach(level RANGE 0 3)
+        file(GLOB_RECURSE opencv_dlls "${opencv_root}/bin/*opencv*.dll"
+            "${opencv_root}/x64/*/bin/*opencv*.dll")
+        if(opencv_dlls)
+            foreach(dll IN LISTS opencv_dlls)
+                get_filename_component(directory "${dll}" DIRECTORY)
+                list(APPEND search_dirs "${directory}")
+            endforeach()
+            break()
+        endif()
+        get_filename_component(opencv_root "${opencv_root}" DIRECTORY)
+    endforeach()
+    get_filename_component(compiler_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    list(APPEND search_dirs "${compiler_dir}")
+    foreach(name libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll libgomp-1.dll)
+        if(MINGW)
             execute_process(COMMAND "${CMAKE_CXX_COMPILER}" "-print-file-name=${name}"
                 OUTPUT_VARIABLE runtime OUTPUT_STRIP_TRAILING_WHITESPACE)
-            if(NOT EXISTS "${runtime}")
-                get_filename_component(compiler_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
-                set(runtime "${compiler_dir}/${name}")
-            endif()
             if(EXISTS "${runtime}")
-                add_custom_command(TARGET ${target} POST_BUILD
-                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                        "${runtime}" "$<TARGET_FILE_DIR:${target}>")
+                get_filename_component(directory "${runtime}" DIRECTORY)
+                list(APPEND search_dirs "${directory}")
             endif()
-        endforeach()
+        endif()
+    endforeach()
+    set(deploy_qt "")
+    if(target STREQUAL "shapeMatchQtClient")
+        list(APPEND search_dirs "${_shape_match_qt_bin}")
+        set(deploy_qt "${SHAPE_MATCH_WINDEPLOYQT}")
     endif()
+    list(REMOVE_DUPLICATES search_dirs)
+    string(REPLACE ";" "|" search_dirs "${search_dirs}")
+    if(MINGW)
+        set(runtime_tool objdump)
+        set(runtime_inspector "${CMAKE_OBJDUMP}")
+        if(NOT runtime_inspector)
+            find_program(runtime_inspector NAMES objdump HINTS "${compiler_dir}")
+        endif()
+    else()
+        set(runtime_tool dumpbin)
+        find_program(runtime_inspector NAMES dumpbin HINTS "${compiler_dir}")
+    endif()
+    if(NOT runtime_inspector)
+        message(FATAL_ERROR "Runtime inspection tool ${runtime_tool} not found for ${CMAKE_CXX_COMPILER}")
+    endif()
+    add_custom_target(${target}_runtime ALL
+        COMMAND "${CMAKE_COMMAND}"
+            "-DEXECUTABLE=$<TARGET_FILE:${target}>"
+            "-DSEARCH_DIRS=${search_dirs}"
+            "-DOBJDUMP=${runtime_inspector}"
+            "-DRUNTIME_TOOL=${runtime_tool}"
+            "-DWINDEPLOYQT=${deploy_qt}"
+            -P "${_shape_match_runtime_script}"
+        DEPENDS ${target}
+        COMMENT "Deploying and checking runtime dependencies for ${target}"
+        VERBATIM)
 endfunction()

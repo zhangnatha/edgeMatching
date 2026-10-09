@@ -23,11 +23,18 @@ OpenCV、Qt 分别安装到 `3rdparty/opencv`、`3rdparty/qt5`，无需系统 Qt
 
 ```powershell
 $root = $PWD.Path
+# 修改为编译 OpenCV、Qt 时使用的 MinGW 目录，避免选中 Strawberry 的 GCC。
+$mingw = "D:/Prog/winlibs64ucrt_stage/mingw64/bin"
+$env:PATH = "$mingw;$env:PATH"
 $ocv = Get-ChildItem 3rdparty/opencv -Recurse -Filter OpenCVConfig.cmake | Select-Object -First 1
 cmake -S . -B build-mingw -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release `
+  "-DCMAKE_C_COMPILER=$mingw/gcc.exe" "-DCMAKE_CXX_COMPILER=$mingw/g++.exe" `
+  "-DCMAKE_MAKE_PROGRAM=$mingw/mingw32-make.exe" `
   "-DOpenCV_DIR=$($ocv.Directory.FullName)" `
   "-DQt5_DIR=$root/3rdparty/qt5/lib/cmake/Qt5" -DBUILD_QT_CLIENT=ON
 ```
+
+已有构建若选中了其他 GCC，请先删除 `build-mingw` 后重新配置。
 
 配置成功后，单独执行编译：
 

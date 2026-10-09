@@ -47,6 +47,14 @@ $cmakeArgs = @('-S', $repoDir, '-B', $BuildDir, '-G', $Generator, '-U', 'Qt5*',
     '-DCMAKE_BUILD_TYPE=Release',
     "-DBUILD_QT_CLIENT=$qtFlag")
 if ($Generator -like 'Visual Studio *') { $cmakeArgs += @('-A', 'x64') }
+if ($Generator -eq 'MinGW Makefiles') {
+    $mingwC = (Get-Command 'gcc.exe' -ErrorAction Stop).Source
+    $mingwCxx = (Get-Command 'g++.exe' -ErrorAction Stop).Source
+    $mingwMake = (Get-Command 'mingw32-make.exe' -ErrorAction Stop).Source
+    $cmakeArgs += @("-DCMAKE_C_COMPILER=$mingwC", "-DCMAKE_CXX_COMPILER=$mingwCxx",
+        "-DCMAKE_MAKE_PROGRAM=$mingwMake")
+}
+
 $opencvConfigDir = $null
 foreach ($candidate in @($OpenCVDir, (Join-Path $OpenCVDir 'build'), (Join-Path $OpenCVDir 'lib\cmake\opencv4'))) {
     if (Test-Path (Join-Path $candidate 'OpenCVConfig.cmake')) { $opencvConfigDir = $candidate; break }
@@ -101,7 +109,7 @@ try {
         $openmpDirs = @(Get-ChildItem (Join-Path $redistDir 'x64') -Directory -Filter 'Microsoft.VC*.OpenMP')
         foreach ($openmp in $openmpDirs) { Copy-Item (Join-Path $openmp.FullName '*.dll') $binDir -Force }
     } elseif ($Generator -eq 'MinGW Makefiles') {
-        $compiler = (Get-Command 'g++.exe' -ErrorAction Stop).Source
+        $compiler = $mingwCxx
         foreach ($name in 'libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll', 'libgomp-1.dll') {
             $runtime = & $compiler "-print-file-name=$name"
             if ($LASTEXITCODE -ne 0) { throw "Cannot locate MinGW runtime: $name" }
@@ -116,6 +124,23 @@ try {
         $qtExe = Join-Path $binDir 'shape_match_qt.exe'
         if (-not (Test-Path $qtExe)) { throw "Qt executable not found: $qtExe" }
         Invoke-Checked $qtDeploy @('--release', '--no-translations', $qtExe)
+    }
+
+    # Verify and deploy transitive dependencies, including those of Qt plugins.
+    if ($Generator -eq 'MinGW Makefiles') {
+        $compilerLine = Get-Content (Join-Path $BuildDir 'CMakeCache.txt') |
+            Where-Object { $_ -match '^CMAKE_CXX_COMPILER:(FILEPATH|STRING)=' } | Select-Object -First 1
+        if (-not $compilerLine) { throw 'Configured C++ compiler not found in CMakeCache.txt' }
+        $compilerDir = Split-Path ($compilerLine -replace '^[^=]*=', '')
+        $objdump = Join-Path $compilerDir 'objdump.exe'
+        if (-not (Test-Path $objdump)) { throw "Runtime inspection tool not found: $objdump" }
+        $searchDirs = @($binDir, $compilerDir, (Join-Path $QtDir 'bin')) +
+            @($opencvDlls | ForEach-Object { $_.Directory.FullName } | Select-Object -Unique)
+        foreach ($exe in @(Get-ChildItem $binDir -File -Filter '*.exe')) {
+            Invoke-Checked 'cmake' @("-DEXECUTABLE=$($exe.FullName)",
+                "-DSEARCH_DIRS=$($searchDirs -join '|')", "-DOBJDUMP=$objdump",
+                '-DRUNTIME_TOOL=objdump', '-P', (Join-Path $repoDir 'cmake\DeployRuntimeDependencies.cmake'))
+        }
     }
 
     New-Item -ItemType Directory -Force -Path (Join-Path $stage 'docs') | Out-Null
