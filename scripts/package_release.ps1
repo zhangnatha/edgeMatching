@@ -1,15 +1,22 @@
 [CmdletBinding()]
 param(
-    [string]$BuildDir = (Join-Path $PSScriptRoot '..\build-release'),
-    [string]$OutputDir = (Join-Path $PSScriptRoot '..\dist\edgeMatching-windows'),
-    [string]$OpenCVDir = (Join-Path $PSScriptRoot '..\3rdparty\opencv'),
-    [string]$QtDir = (Join-Path $PSScriptRoot '..\3rdparty\qt5'),
+    [string]$BuildDir,
+    [string]$OutputDir,
+    [string]$OpenCVDir,
+    [string]$QtDir,
     [string]$Generator = 'Visual Studio 17 2022',
     [switch]$NoQt
 )
 
 $ErrorActionPreference = 'Stop'
-$repoDir = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+# Resolve defaults after parameter binding (Windows PowerShell compatibility).
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+if (-not $PSBoundParameters.ContainsKey('BuildDir')) { $BuildDir = Join-Path $scriptDir '..\build-release' }
+if (-not $PSBoundParameters.ContainsKey('OutputDir')) { $OutputDir = Join-Path $scriptDir '..\dist\edgeMatching-windows' }
+if (-not $PSBoundParameters.ContainsKey('OpenCVDir')) { $OpenCVDir = Join-Path $scriptDir '..\3rdparty\opencv' }
+if (-not $PSBoundParameters.ContainsKey('QtDir')) { $QtDir = Join-Path $scriptDir '..\3rdparty\qt5' }
+
+$repoDir = (Resolve-Path (Join-Path $scriptDir '..')).Path
 $BuildDir = [IO.Path]::GetFullPath($BuildDir)
 $OutputDir = [IO.Path]::GetFullPath($OutputDir)
 $OpenCVDir = [IO.Path]::GetFullPath($OpenCVDir)

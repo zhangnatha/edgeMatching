@@ -106,7 +106,18 @@ endif()
 set_target_properties(shapeMatchQtClient PROPERTIES
     OUTPUT_NAME shape_match_qt
 )
+include("${SHAPE_MATCH_ROOT_DIR}/cmake/DeployWindowsRuntime.cmake")
+shape_match_deploy_windows_runtime(shapeMatchQtClient)
 if(WIN32)
+    find_program(SHAPE_MATCH_WINDEPLOYQT NAMES windeployqt
+        HINTS "${_shape_match_qt_bin}" NO_DEFAULT_PATH)
+    if(NOT SHAPE_MATCH_WINDEPLOYQT)
+        message(FATAL_ERROR "windeployqt not found in selected Qt: ${_shape_match_qt_bin}")
+    endif()
+    add_custom_command(TARGET shapeMatchQtClient POST_BUILD
+        COMMAND "${SHAPE_MATCH_WINDEPLOYQT}" --no-translations
+            "$<TARGET_FILE:shapeMatchQtClient>"
+        COMMENT "Deploying Qt runtime and platform plugins")
     add_custom_command(TARGET shapeMatchQtClient POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:MakeTemplate>" "$<TARGET_FILE:FindTemplate>"

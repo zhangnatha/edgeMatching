@@ -12,11 +12,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build_opencv_with_contrib.ps
 powershell -NoProfile -ExecutionPolicy Bypass -File UI/build_qt5.ps1 -Toolchain MinGW -Jobs 8
 ```
 
+Qt 启用桌面 OpenGL，关闭 EGL/ANGLE；请安装显卡厂商驱动，无需额外安装 EGL 开发库。
 OpenCV、Qt 分别安装到 `3rdparty/opencv`、`3rdparty/qt5`，无需系统 Qt。
 成功后自动清理下载压缩包；OpenCV 同时清理本次临时构建目录，Qt 保留源码和构建缓存。
 失败时保留文件供排查。两个脚本均支持 `-InstallDir`。
 
-## 2. 编译与验证
+## 2. 编译
+
+先配置工程：
 
 ```powershell
 $root = $PWD.Path
@@ -24,17 +27,37 @@ $ocv = Get-ChildItem 3rdparty/opencv -Recurse -Filter OpenCVConfig.cmake | Selec
 cmake -S . -B build-mingw -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release `
   "-DOpenCV_DIR=$($ocv.Directory.FullName)" `
   "-DQt5_DIR=$root/3rdparty/qt5/lib/cmake/Qt5" -DBUILD_QT_CLIENT=ON
+```
+
+配置成功后，单独执行编译：
+
+```powershell
 cmake --build build-mingw --parallel 8
-$env:PATH = "$root\3rdparty\opencv\bin;$root\3rdparty\qt5\bin;$env:PATH"
+```
+
+构建后自动将 OpenCV、Qt、MinGW 运行库和 Qt 插件复制到程序目录。
+
+## 3. 运行与验证
+
+在仓库根目录单独执行自动验证：
+
+```powershell
 Push-Location build-mingw
 ctest --output-on-failure
 Pop-Location
 ```
 
-CTest 验证 11 次训练、26 次推理及 Qt 启动。CLI 位于 `build-mingw/train.exe`、
-`build-mingw/inference.exe`；样例参数见 [README](../README.md)。
+CTest 验证 11 次训练、26 次推理及 Qt 启动。编译时已部署运行库，无需额外设置 PATH。
 
-## 3. 打包与运行
+单独启动界面程序：
+
+```powershell
+.\build-mingw\UI\shape_match_qt.exe
+```
+
+CLI 位于 `build-mingw/train.exe`、`build-mingw/inference.exe`；样例参数见 [README](../README.md)。
+
+## 4. 打包与运行
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package_release.ps1 `

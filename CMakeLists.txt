@@ -68,6 +68,10 @@ if(OpenMP_CXX_FOUND)
     target_link_libraries(inference PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/DeployWindowsRuntime.cmake")
+shape_match_deploy_windows_runtime(train)
+shape_match_deploy_windows_runtime(inference)
+
 # --- 安装库 ---
 include(GNUInstallDirs)
 install(TARGETS MakeTemplate FindTemplate

@@ -2,11 +2,15 @@
 param(
     [ValidateSet('MinGW', 'MSVC')][string]$Toolchain = 'MinGW',
     [ValidateRange(1, 256)][int]$Jobs = [Environment]::ProcessorCount,
-    [string]$InstallDir = (Join-Path $PSScriptRoot '3rdparty\opencv'),
+    [string]$InstallDir,
     [string]$Generator = 'Visual Studio 17 2022'
 )
 
 $ErrorActionPreference = 'Stop'
+# Resolve defaults after parameter binding (Windows PowerShell compatibility).
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+if (-not $PSBoundParameters.ContainsKey('InstallDir')) { $InstallDir = Join-Path $scriptDir '3rdparty\opencv' }
+
 $InstallDir = [IO.Path]::GetFullPath($InstallDir)
 $version = '4.7.0'
 function Invoke-Checked([string]$File, [string[]]$Arguments) {
@@ -29,7 +33,7 @@ if ($Toolchain -eq 'MinGW') {
 }
 
 # Only this invocation owns the work directory; never remove a user-supplied directory.
-$workDir = Join-Path $PSScriptRoot ("edgeMatching-opencv-{0}" -f [guid]::NewGuid())
+$workDir = Join-Path $scriptDir ("edgeMatching-opencv-{0}" -f [guid]::NewGuid())
 if ($InstallDir -eq $workDir -or $InstallDir.StartsWith($workDir + [IO.Path]::DirectorySeparatorChar)) {
     throw 'InstallDir must be outside the temporary build directory.'
 }
@@ -55,6 +59,12 @@ try {
         '-DBUILD_EXAMPLES=OFF', '-DBUILD_opencv_apps=OFF', '-DBUILD_JAVA=OFF',
         '-DBUILD_opencv_python2=OFF', '-DBUILD_opencv_python3=OFF', '-DWITH_QT=OFF',
         '-DWITH_FFMPEG=OFF', '-DWITH_MSMF=OFF', '-DWITH_IPP=OFF')
+    # OpenCV 4.7's pthread backend can reference pthread_self without a declaration
+    # with some MinGW thread models. Select OpenMP instead; if unavailable OpenCV
+    # falls back to sequential parallel_for while the application's OpenMP is independent.
+    if ($Toolchain -eq 'MinGW') {
+        $args += @('-DWITH_PTHREADS_PF=OFF', '-DWITH_OPENMP=ON', '-DWITH_TBB=OFF', '-DWITH_HPX=OFF')
+    }
     if ($Generator -like 'Visual Studio *') { $args += @('-A', 'x64') }
     Invoke-Checked 'cmake.exe' $args
     Invoke-Checked 'cmake.exe' @('--build', $buildDir, '--config', 'Release', '--parallel', "$Jobs")
