@@ -41,6 +41,11 @@ if ($Toolchain -eq 'MinGW') {
 } elseif ($env:VSCMD_ARG_TGT_ARCH -and $env:VSCMD_ARG_TGT_ARCH -ne 'x64') {
     throw 'Qt and OpenCV must both be built for x64.'
 }
+function Remove-QtDownloads {
+    foreach ($file in @($archive, "$archive.part")) {
+        if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force }
+    }
+}
 $qmake = Join-Path $InstallDir 'bin\qmake.exe'
 if ((Test-Path $qmake) -and (Test-Path (Join-Path $InstallDir 'bin\lrelease.exe')) -and
     (Test-Path (Join-Path $InstallDir 'bin\windeployqt.exe')) -and
@@ -53,6 +58,7 @@ if ((Test-Path $qmake) -and (Test-Path (Join-Path $InstallDir 'bin\lrelease.exe'
     }
     $installedVersion = & $qmake -query QT_VERSION
     if ($LASTEXITCODE -eq 0 -and $installedVersion -eq $version) {
+        Remove-QtDownloads
         Write-Host "Qt $version already installed at $InstallDir"
         return
     }
@@ -112,7 +118,13 @@ try {
             Invoke-Checked 'nmake.exe' @('/NOLOGO', 'install')
         }
     } finally { Pop-Location }
-    Write-Host "Qt $version installed at $InstallDir"
+    foreach ($required in @('bin\qmake.exe', 'bin\lrelease.exe', 'bin\windeployqt.exe',
+        'plugins\platforms\qwindows.dll', 'lib\cmake\Qt5Widgets\Qt5WidgetsConfig.cmake',
+        'lib\cmake\Qt5Concurrent\Qt5ConcurrentConfig.cmake')) {
+        if (-not (Test-Path (Join-Path $InstallDir $required))) { throw "Qt installation incomplete: $required" }
+    }
+    Remove-QtDownloads
+    Write-Host "Qt $version installed at $InstallDir; downloaded archives removed."
 } catch {
     Write-Warning "Qt build failed. Cache retained at $CacheDir"
     throw

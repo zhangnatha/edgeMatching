@@ -43,6 +43,7 @@
 build/
 build-*/
 edgeMatching-opencv.*/
+edgeMatching-opencv-*/
 edgeMatching-release.*/
 __pycache__/
 cmake-*
