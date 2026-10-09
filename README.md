@@ -1,6 +1,6 @@
 # edgeMatching
 
-[![Ubuntu](https://img.shields.io/badge/Ubuntu-18.04%2B-E95420)](https://ubuntu.com/)[![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D6)](https://www.microsoft.com/windows)[![C%2B%2B](https://img.shields.io/badge/C%2B%2B-11-blue)](https://isocpp.org/)[![CMake](https://img.shields.io/badge/CMake-%E2%89%A53.10-064F8C)](https://cmake.org/)[![OpenCV](https://img.shields.io/badge/OpenCV-4.7.0-green)](https://opencv.org/)[![Qt](https://img.shields.io/badge/Qt-5.x-41CD52)](https://www.qt.io/)[![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
+[![Ubuntu](https://img.shields.io/badge/Ubuntu-18.04%2B-E95420)](https://ubuntu.com/)[![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D6)](https://www.microsoft.com/windows)[![C%2B%2B](https://img.shields.io/badge/C%2B%2B-11-blue)](https://isocpp.org/)[![CMake](https://img.shields.io/badge/CMake-%E2%89%A53.16-064F8C)](https://cmake.org/)[![OpenCV](https://img.shields.io/badge/OpenCV-4.7.0-green)](https://opencv.org/)[![Qt](https://img.shields.io/badge/Qt-5.x-41CD52)](https://www.qt.io/)[![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 
 基于梯度方向余弦相似度的工业边缘形状模板匹配。项目包含 C++ 核心库、
 `train`/`inference` 命令行程序，以及支持中英文的 Qt5 客户端。
@@ -70,8 +70,8 @@ Qt 专项说明见 [UI/README.md](UI/README.md)。
 
 支持平台与必需依赖：
 
-- Ubuntu 18.04 及更高版本：支持 C++11 的 GCC/Clang、CMake 3.10 或更高版本。
-- Windows 10/11：Visual Studio 2019/2022（MSVC）或 MinGW-w64、CMake 3.10 或更高版本。
+- Ubuntu 18.04 及更高版本：支持 C++11 的 GCC/Clang、CMake 3.16 或更高版本。
+- Windows 10/11：Visual Studio 2019/2022（MSVC）或 MinGW-w64、CMake 3.16 或更高版本。
 - OpenCV 4.7.0，使用 `core`、`imgproc`、`highgui`、`imgcodecs`、`calib3d`。
   将预编译包放在 `3rdparty/opencv`，或通过 `-DOpenCV_DIR=...` 指向 OpenCV 的
   `OpenCVConfig.cmake` 所在目录。Ubuntu 可运行 `./build_opencv_with_contrib.sh`；
@@ -85,15 +85,18 @@ Qt 专项说明见 [UI/README.md](UI/README.md)。
 - AVX2 仅在 x86 且 CPU 支持时启用；不应为 ARM 或不支持 AVX2 的平台添加
   `-mavx2` 全局编译选项。
 
-如果尚未安装 Qt5，可执行：
+若希望完全使用仓库内的 Qt5，可执行（无需系统安装 Qt）：
 
 ```bash
 UI/build_qt5.sh --jobs 8
 ```
 
-脚本下载并校验 Qt 5.15.16，将最小模块安装到 `3rdparty/qt5`；也可用
+Linux 脚本下载并校验 Qt 5.15.16，将 Qt Widgets/Concurrent、XCB 插件和翻译工具
+安装到 `3rdparty/qt5`；缓存默认在 `UI/build_cache`，失败后保留用于重试，不使用 `/tmp`。也可用
 `--cache`、`--install` 或对应环境变量覆盖路径。构建 Qt 所需的系统开发包
-（X11/XCB、fontconfig、freetype、ICU 等）需预先由系统包管理器安装。
+（X11/XCB、fontconfig、freetype 等）需预先安装，完整依赖命令见 [UI/README.md](UI/README.md)。
+Windows 请在 x64 Visual Studio 开发者 PowerShell 中运行 `UI/build_qt5.ps1`，同样
+安装到 `3rdparty/qt5`；Qt、OpenCV 和项目必须使用相同的架构和兼容编译器。
 
 Ubuntu 18.04 的源码构建依赖可一次安装：
 
@@ -103,15 +106,18 @@ sudo apt install build-essential cmake libopencv-dev libomp-dev \
   pkg-config patchelf zip
 ```
 
-若使用仓库内 Qt5，仍需安装 Qt 构建所需的 X11/XCB、fontconfig、freetype 和 ICU
-开发包；`UI/build_qt5.sh` 会将 Qt 安装到 `3rdparty/qt5`。为保证发布包能在 Ubuntu
+Ubuntu 18.04 的系统 CMake 3.10 太旧，需先安装 CMake 3.16+（`--parallel`、
+`--install` 等命令要求新版 CMake）。若使用仓库内 Qt5，仍需安装 Qt 构建所需的
+X11/XCB、fontconfig 和 freetype 开发包；`UI/build_qt5.sh` 会将 Qt 安装到 `3rdparty/qt5`。为保证发布包能在 Ubuntu
 18.04 及更高版本运行，Linux 发布包应在 Ubuntu 18.04 或兼容的最低 glibc 环境中
 构建，再复制到更新版本系统。
 
 Windows 源码构建需要 Git、CMake、Visual Studio 2019/2022（含 C++ 桌面组件）或
 MinGW-w64，以及 OpenCV 4.7.0 的 Windows 开发包。Qt 客户端还需要 Qt5 Widgets/
 Concurrent 和同版本的 `windeployqt.exe`；将 OpenCV `bin` 目录加入 `PATH`，或由
-Windows 发布脚本复制 DLL 到发布目录。
+Windows 发布脚本复制 DLL 到发布目录。官方 OpenCV 包的 DLL 通常位于
+`3rdparty\opencv\build\x64\vc16\bin`，而源码安装包通常在 `3rdparty\opencv\bin`。
+MSVC 与 MinGW 的 Qt/OpenCV 二进制不能混用。
 
 ## 编译、验证和安装
 
@@ -120,7 +126,14 @@ Windows 发布脚本复制 DLL 到发布目录。
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
+(cd build && ctest --output-on-failure)
 ```
+
+CTest 会执行 README 的 11 个训练、26 个推理案例并核对数量和模板 ID 分布，
+同时检查 Qt 客户端启动与语言切换（需要 Python 3.6+ 和 Qt 翻译工具）。
+单独运行 CLI 回归可执行 `python3 scripts/verify_examples.py --build-dir build`。
+使用已有构建缓存切换 Qt 时，请明确传入
+`-U 'Qt5*' -DQt5_DIR="$PWD/3rdparty/qt5/lib/cmake/Qt5"`，或使用新的构建目录。
 
 生成文件：
 
@@ -149,13 +162,16 @@ Windows PowerShell（Visual Studio 生成器）使用同一套 CMake 工程：
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
   -DOpenCV_DIR="$PWD\3rdparty\opencv\build"
 cmake --build build --config Release
+$env:PATH = "$PWD\3rdparty\qt5\bin;$PWD\3rdparty\opencv\build\x64\vc16\bin;$env:PATH"
+Push-Location build
+ctest -C Release --output-on-failure
+Pop-Location
 cmake --install build --config Release --prefix build\publish
 ```
 
-如果使用 MinGW，将生成器替换为 `-G "MinGW Makefiles"`，并使用
-`cmake --build build --config Release --parallel`。运行时将
-`3rdparty\opencv\bin` 中的 DLL 放在可执行文件同目录或加入 `PATH`；Qt 客户端
-还需运行 `windeployqt build\UI\Release\shape_match_qt.exe`。
+MinGW-w64 的完整依赖构建、样例验证和打包流程见 [Windows MinGW 指南](docs/windows_mingw.md)。
+Qt 脚本需指定 `UI/build_qt5.ps1 -Toolchain MinGW`；Qt、OpenCV 和项目必须使用同一套
+x64 MinGW 编译器。MinGW 输出为 `build-mingw/UI/shape_match_qt.exe`，不含 `Release` 子目录。
 
 Linux/Windows 的无源码发布包由以下脚本生成，包内包含可执行文件、核心库、依赖
 动态库和 Qt 插件（目标平台可用时）：
@@ -168,28 +184,28 @@ Linux/Windows 的无源码发布包由以下脚本生成，包内包含可执行
 powershell -ExecutionPolicy Bypass -File .\scripts\package_release.ps1 -OutputDir .\dist\edgeMatching-windows
 ```
 
+发布脚本默认要求仓库内 Qt，缺失时会报错；仅打包 CLI 时使用 `--no-qt` / `-NoQt`。
+Linux 包会收集完整动态库依赖并使用相对 RPATH；Windows 包会收集项目 DLL、
+OpenCV DLL、Qt 插件及编译器运行库，解压后从 `bin` 启动。
 脚本会在失败时退出，不删除源码或已有构建目录；详细参数见脚本的 `--help` 或
 `Get-Help` 输出。
 
-Linux 打包依赖 `cmake`、`patchelf` 和 `zip` 工具。针对不同运行环境的依赖准备方式如下：
+Linux 打包依赖 CMake 3.16+、`zip` 和 patchelf 0.14+。Ubuntu 18.04 的
+系统 patchelf 0.9 低于发布脚本要求，可无需 root 构建仓库内版本：
 
-- **安装了 Conda（Anaconda / Miniconda）**：
-  - 若 Conda 环境中已带有 `patchelf`，`package_release.sh` 脚本已内置对 `~/anaconda3/bin`、`~/miniconda3/bin` 等常见路径的自动探测，可直接执行脚本；也可在终端先执行 `conda activate`。
-  - 若 Conda 环境中缺少该工具，无需 root / `sudo` 权限即可直接在当前环境中安装：
-    ```bash
-    conda install -c conda-forge patchelf zip
-    ```
-- **未安装 Conda（纯系统环境）**：
-  - **有 sudo 权限**：直接通过系统包管理器安装：
-    ```bash
-    sudo apt install -y patchelf zip
-    ```
-  - **无 sudo 权限（普通用户）**：可直接下载 GitHub 发布的独立静态二进制（单文件免编译安装）并加入 PATH：
-    ```bash
-    mkdir -p ~/.local/bin
-    curl -sSL https://github.com/NixOS/patchelf/releases/download/0.18.0/patchelf-0.18.0-x86_64.tar.gz | tar -xz -C ~/.local/bin patchelf
-    export PATH="$HOME/.local/bin:$PATH"
-    ```
+```bash
+bash scripts/build_patchelf.sh
+./scripts/package_release.sh --jobs 8
+```
+
+构建脚本校验 patchelf 0.14.3 源码并安装到 `3rdparty/tools`，兼容 Ubuntu 18.04
+的 GCC 7。发布脚本优先使用该版本；也支持 PATH 中或常见 Conda 环境中的
+patchelf 0.14+，检测到旧版本会在构建前明确报错。
+
+持续集成配置位于 `.github/workflows/build.yml`，提供 Ubuntu 22.04/24.04 和
+Windows Server 2022 runner 的依赖构建、样例、Qt 启动及发布包验证任务。
+Windows 10/11 实机验收需在各自系统中运行上述构建及 CTest 命令；
+CI 的 Windows Server runner 不能代替这两种客户端系统的实机测试。
 
 匹配过程可视化是独立的 CMake 选项，默认关闭：
 
@@ -309,8 +325,8 @@ CLI 接受的搜索角度为整数 `[-180,180]`；Qt 控件范围更宽时，跨
 ## assert 全量回归矩阵
 
 该矩阵使用仓库 `assert/` 中的 11 个模板和 26 张待测图。下表命令直接调用
-`build/train` 和 `build/inference`，不依赖额外测试二进制，也不调用 CTest；
-因此可独立逐案例复现。表中的期望分布来自删除测试目录前的全量回归结果，
+`build/train` 和 `build/inference`，不依赖额外测试二进制，可独立逐案例复现。CTest 的 `assert_matrix`
+也会通过 `scripts/verify_examples.py` 执行这些命令。表中的期望分布来自删除测试目录前的全量回归结果，
 格式为 `template_id:数量`。
 
 先编译核心程序，并创建独立输出目录：

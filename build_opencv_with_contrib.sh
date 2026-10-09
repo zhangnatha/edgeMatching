@@ -8,9 +8,13 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 readonly INSTALL_DIR="${SCRIPT_DIR}/3rdparty/opencv"
 
-# 下载、解压和编译都在独立临时目录中进行，避免污染项目目录。
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/edgeMatching-opencv.XXXXXX")"
+# 下载、解压和编译均在脚本根目录下进行，不使用 /tmp 或外部 TMPDIR。
+WORK_DIR="$(mktemp -d "${SCRIPT_DIR}/edgeMatching-opencv.XXXXXX")"
 readonly WORK_DIR
+# 编译器和 CMake 创建的临时文件也放在此目录。
+export TMPDIR="${WORK_DIR}"
+export TMP="${WORK_DIR}"
+export TEMP="${WORK_DIR}"
 readonly OPENCV_DIR="${WORK_DIR}/opencv-${OPENCV_VERSION}"
 readonly CONTRIB_DIR="${WORK_DIR}/opencv_contrib-${OPENCV_VERSION}"
 readonly BUILD_DIR="${WORK_DIR}/build"
@@ -18,23 +22,34 @@ readonly BUILD_DIR="${WORK_DIR}/build"
 cleanup() {
     local exit_code=$?
     trap - EXIT
-    if [[ -n "${WORK_DIR:-}" && -d "${WORK_DIR}" ]]; then
+    if (( exit_code != 0 )); then
+        echo "Build failed (exit ${exit_code}). Files retained at ${WORK_DIR}" >&2
+    elif [[ -n "${WORK_DIR:-}" && -d "${WORK_DIR}" ]]; then
         echo "Cleaning temporary directory ${WORK_DIR}"
         rm -rf -- "${WORK_DIR}"
     fi
     exit "${exit_code}"
 }
 trap cleanup EXIT
+trap 'echo "Error at line ${LINENO}: ${BASH_COMMAND}" >&2' ERR
 trap 'exit 130' INT TERM
+
+# 提前检查必需工具，避免下载后才因依赖缺失而失败。
+for tool in wget unzip cmake nproc; do
+    if ! command -v "${tool}" >/dev/null 2>&1; then
+        echo "Required tool not found: ${tool}" >&2
+        exit 1
+    fi
+done
 
 # 下载源码
 echo "Downloading OpenCV ${OPENCV_VERSION}..."
-wget -O "${WORK_DIR}/opencv.zip" \
+wget --timeout=60 --tries=3 -O "${WORK_DIR}/opencv.zip" \
     "https://github.com/opencv/opencv/archive/${OPENCV_VERSION}.zip"
 unzip -q "${WORK_DIR}/opencv.zip" -d "${WORK_DIR}"
 
 echo "Downloading opencv_contrib ${OPENCV_VERSION}..."
-wget -O "${WORK_DIR}/opencv_contrib.zip" \
+wget --timeout=60 --tries=3 -O "${WORK_DIR}/opencv_contrib.zip" \
     "https://github.com/opencv/opencv_contrib/archive/${OPENCV_VERSION}.zip"
 unzip -q "${WORK_DIR}/opencv_contrib.zip" -d "${WORK_DIR}"
 

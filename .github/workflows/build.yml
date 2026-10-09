@@ -1,0 +1,118 @@
+name: Build and examples
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install development dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config perl python3 gperf bison flex wget unzip zip patchelf \
+            libfontconfig1-dev libfreetype6-dev libdbus-1-dev libglib2.0-dev \
+            libx11-dev libx11-xcb-dev libxext-dev libxfixes-dev libxi-dev libxrender-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-render-util0-dev libxcb-shape0-dev \
+            libxcb-randr0-dev libxcb-xfixes0-dev libxcb-sync-dev libxcb-shm0-dev \
+            libxcb-icccm4-dev libxcb-keysyms1-dev libxcb-image0-dev libxcb-xkb-dev \
+            libxcb-xinerama0-dev libxcb-util-dev libxkbcommon-dev libxkbcommon-x11-dev
+      - uses: actions/cache@v4
+        with:
+          path: 3rdparty
+          key: native-deps-${{ runner.os }}-${{ matrix.os }}-${{ hashFiles('UI/build_qt5.sh', 'build_opencv_with_contrib.sh') }}
+      - name: Build local dependencies
+        run: |
+          if [ ! -f 3rdparty/opencv/lib/cmake/opencv4/OpenCVConfig.cmake ]; then
+            bash build_opencv_with_contrib.sh
+          fi
+          bash UI/build_qt5.sh --jobs 2
+      - name: Build and test
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DQt5_DIR="$PWD/3rdparty/qt5/lib/cmake/Qt5"
+          cmake --build build --parallel 2
+          cd build
+          ctest --output-on-failure
+      - name: Package and check startup
+        run: |
+          bash scripts/package_release.sh --jobs 2
+          QT_QPA_PLATFORM=offscreen dist/edgeMatching-linux/bin/shape_match_qt --smoke-test
+          dist/edgeMatching-linux/bin/train --help
+          dist/edgeMatching-linux/bin/inference --help
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-${{ matrix.os }}-verification
+          path: |
+            build/assert_matrix/verification.json
+            build/Testing/Temporary/LastTest.log
+
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install Qt build tools
+        shell: pwsh
+        run: |
+          choco install strawberryperl jom --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'Qt build tool installation failed' }
+          'C:\Strawberry\perl\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - uses: actions/cache@v4
+        with:
+          path: 3rdparty
+          key: native-deps-windows-msvc-${{ hashFiles('UI/build_qt5.ps1') }}-opencv470
+      - name: Build local dependencies
+        shell: pwsh
+        run: |
+          if (-not (Test-Path '3rdparty/opencv/build/OpenCVConfig.cmake')) {
+            New-Item -ItemType Directory -Force 3rdparty | Out-Null
+            Invoke-WebRequest 'https://github.com/opencv/opencv/releases/download/4.7.0/opencv-4.7.0-windows.exe' -OutFile '3rdparty/opencv-installer.exe'
+            $installer = Start-Process '3rdparty/opencv-installer.exe' -ArgumentList "-o$PWD/3rdparty", '-y' -Wait -PassThru
+            if ($installer.ExitCode -ne 0) { throw 'OpenCV extraction failed' }
+          }
+          ./UI/build_qt5.ps1 -Jobs 2
+      - name: Build and test
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G 'Visual Studio 17 2022' -A x64 -DOpenCV_DIR="$PWD/3rdparty/opencv/build" -DQt5_DIR="$PWD/3rdparty/qt5/lib/cmake/Qt5"
+          if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed' }
+          cmake --build build --config Release --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
+          $env:PATH = "$PWD/3rdparty/qt5/bin;$PWD/3rdparty/opencv/build/x64/vc16/bin;$env:PATH"
+          Push-Location build
+          try {
+            ctest -C Release --output-on-failure
+            if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
+          } finally { Pop-Location }
+      - name: Package and check startup
+        shell: pwsh
+        run: |
+          ./scripts/package_release.ps1
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          & ./dist/edgeMatching-windows/bin/shape_match_qt.exe --smoke-test
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged Qt startup failed' }
+          & ./dist/edgeMatching-windows/bin/train.exe --help
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged train startup failed' }
+          & ./dist/edgeMatching-windows/bin/inference.exe --help
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged inference startup failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-verification
+          path: |
+            build/assert_matrix/verification.json
+            build/Testing/Temporary/LastTest.log

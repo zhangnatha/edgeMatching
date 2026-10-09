@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.16...3.31)
 project(shapeMatch)
 
 option(SHAPE_MATCH_VISUALIZE_COARSE "Show coarse matching candidates while inference runs" OFF)
@@ -8,13 +8,16 @@ option(BUILD_QT_CLIENT "Build the Qt5 Widgets client" ON)
 # --- C++ 标准 ---
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
+find_package(Threads REQUIRED)
+find_package(OpenMP QUIET)
 
 # --- OpenCV ---
 # 优先使用用户显式指定的 OpenCV_DIR；否则使用仓库内的预编译依赖。
 if(NOT OpenCV_DIR AND EXISTS "${CMAKE_SOURCE_DIR}/3rdparty/opencv/lib/cmake/opencv4")
     set(OpenCV_DIR "${CMAKE_SOURCE_DIR}/3rdparty/opencv/lib/cmake/opencv4")
 endif()
-find_package(OpenCV REQUIRED COMPONENTS core imgproc highgui imgcodecs calib3d)
+find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc highgui imgcodecs calib3d)
 
 # --- 头文件目录 ---
 include_directories(
@@ -26,13 +29,10 @@ include_directories(
 # GCC/Clang 使用 OpenMP 和位置无关代码；MSVC 使用 CMake 默认 ABI，避免传入
 # Unix 专用的 -fopenmp/-fPIC 参数。
 if(MSVC)
-    add_compile_options(/O2)
+    add_compile_options(/O2 /utf-8)
+    add_definitions(-DNOMINMAX)
 else()
     add_compile_options(-O3 -fPIC)
-    find_package(OpenMP QUIET)
-    if(OpenMP_CXX_FOUND)
-        add_compile_options(${OpenMP_CXX_FLAGS})
-    endif()
 endif()
 
 # --- 输出构建信息 ---
@@ -43,7 +43,7 @@ message(STATUS "OpenCV_LIBRARIES = ${OpenCV_LIBRARIES}")
 add_library(MakeTemplate SHARED
     src/MakeTemplateV1.cpp
 )
-target_link_libraries(MakeTemplate PUBLIC ${OpenCV_LIBRARIES})
+target_link_libraries(MakeTemplate PUBLIC ${OpenCV_LIBRARIES} Threads::Threads)
 
 add_library(FindTemplate SHARED
     src/FindTemplateV1.cpp
@@ -52,7 +52,7 @@ target_compile_definitions(FindTemplate PRIVATE
     SHAPE_MATCH_VISUALIZE_COARSE=$<BOOL:${SHAPE_MATCH_VISUALIZE_COARSE}>
     SHAPE_MATCH_VISUALIZE_FINE=$<BOOL:${SHAPE_MATCH_VISUALIZE_FINE}>
 )
-target_link_libraries(FindTemplate PUBLIC ${OpenCV_LIBRARIES})
+target_link_libraries(FindTemplate PUBLIC ${OpenCV_LIBRARIES} Threads::Threads)
 
 # --- 构建可执行文件 ---
 add_executable(train ${CMAKE_SOURCE_DIR}/train.cpp)
@@ -92,11 +92,28 @@ if(BUILD_QT_CLIENT)
     # CMAKE_PREFIX_PATH is prepended so an explicitly supplied Qt toolchain
     # still remains available as a fallback when the local install is absent.
     set(_shape_match_qt5_prefix "${CMAKE_SOURCE_DIR}/3rdparty/qt5")
-    if(EXISTS "${_shape_match_qt5_prefix}/lib/cmake/Qt5/Qt5Config.cmake")
+    if(NOT Qt5_DIR AND EXISTS "${_shape_match_qt5_prefix}/lib/cmake/Qt5/Qt5Config.cmake")
         list(PREPEND CMAKE_PREFIX_PATH "${_shape_match_qt5_prefix}")
         set(Qt5_DIR "${_shape_match_qt5_prefix}/lib/cmake/Qt5" CACHE PATH
-            "Qt5 package configuration directory" FORCE)
+            "Qt5 package configuration directory")
         message(STATUS "Using repository Qt5 installation: ${_shape_match_qt5_prefix}")
     endif()
     add_subdirectory(UI)
+endif()
+
+include(CTest)
+if(BUILD_TESTING)
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME assert_matrix
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/verify_examples.py"
+                --build-dir "$<TARGET_FILE_DIR:train>"
+                --output-dir "${CMAKE_BINARY_DIR}/assert_matrix")
+        set_tests_properties(assert_matrix PROPERTIES TIMEOUT 600)
+    endif()
+    if(TARGET shapeMatchQtClient)
+        add_test(NAME qt_client_startup COMMAND shapeMatchQtClient --smoke-test)
+        set_tests_properties(qt_client_startup PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+    endif()
 endif()

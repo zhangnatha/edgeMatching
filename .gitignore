@@ -42,6 +42,9 @@
 
 build/
 build-*/
+edgeMatching-opencv.*/
+edgeMatching-release.*/
+__pycache__/
 cmake-*
 .idea
 3rdparty

@@ -22,18 +22,63 @@ cmake --build build --parallel
 
 ## Qt5 安装脚本
 
-`build_qt5.sh` 下载官方 Qt 5.15.16 源码，校验固定 SHA256 后，将最小模块安装到仓库 `3rdparty/qt5`。源码、压缩包和构建目录默认在 `/tmp/shape-match-qt5`；脚本不会自动执行下载。
+`build_qt5.sh` 下载官方 Qt 5.15.16 源码并校验固定 SHA256，安装到仓库
+`3rdparty/qt5`，无需系统安装 Qt。源码、压缩包、构建目录及编译临时文件默认
+位于 `UI/build_cache`；缓存会保留以便失败后重试，脚本不会删除用户指定的目录。
+
+Ubuntu 18.04+ 先准备开发依赖（不是安装系统 Qt）：
 
 ```bash
-JOBS=8 UI/build_qt5.sh
-# 或：UI/build_qt5.sh --jobs 8 --cache /tmp/qt-cache
+sudo apt install build-essential pkg-config perl python3 gperf bison flex \
+  libfontconfig1-dev libfreetype6-dev libdbus-1-dev libglib2.0-dev \
+  libx11-dev libx11-xcb-dev libxext-dev libxfixes-dev libxi-dev libxrender-dev \
+  libxcb1-dev libxcb-render0-dev libxcb-render-util0-dev libxcb-shape0-dev \
+  libxcb-randr0-dev libxcb-xfixes0-dev libxcb-sync-dev libxcb-shm0-dev \
+  libxcb-icccm4-dev libxcb-keysyms1-dev libxcb-image0-dev libxcb-xkb-dev \
+  libxcb-xinerama0-dev libxcb-util-dev libxkbcommon-dev libxkbcommon-x11-dev
+UI/build_qt5.sh --jobs 8
+cmake -S . -B build-local -DCMAKE_BUILD_TYPE=Release \
+  -DQt5_DIR="$PWD/3rdparty/qt5/lib/cmake/Qt5"
+cmake --build build-local --parallel 8
+(cd build-local && ctest --output-on-failure)
+./build-local/UI/shape_match_qt
 ```
 
-可用环境变量：`QT_SHA256`（校验覆盖）、`QT_CACHE_DIR`、`QT_SRC_DIR`、`QT_BUILD_DIR`、`QT_ARCHIVE`、`QT_INSTALL_DIR`。重复运行时若检测到 `<install>/bin/qmake` 会直接退出。
+CMake 必须为 3.16+；Ubuntu 18.04 的默认 CMake 3.10 需要升级。脚本不使用
+`sudo`，会明确指出缺少的命令或 XCB 开发库。默认启用 XCB 和字体支持、关闭
+OpenGL，跳过 WebEngine 等无关模块，保留 Qt Tools 以提供 `lrelease`。
 
-脚本不使用 `sudo`，会在缺少依赖时直接报错；请由用户或管理员预先安装构建依赖。Linux/XCB 常见依赖包括 `gcc`、`g++`、`make`、`perl`、`python3`、`awk`、`gperf`、`bison`、`flex`、`libfontconfig1-dev`、`libdbus-1-dev`、`libfreetype6-dev`、`libicu-dev`、`libglib2.0-dev`、`libx11-dev`、`libx11-xcb-dev`、`libxcb1-dev`、`libxcb-*`、`libxext-dev`、`libxfixes-dev`、`libxi-dev`、`libxrender-dev`、`libxkbcommon-dev`、`libxkbcommon-x11-dev`。不同发行版的包名可能不同。
+可用环境变量：`JOBS`、`QT_URL`（下载镜像）、`QT_SHA256`（校验覆盖）、
+`QT_CACHE_DIR`、`QT_SRC_DIR`、`QT_BUILD_DIR`、`QT_ARCHIVE`、`QT_INSTALL_DIR`。
+也可使用 `--cache DIR`、`--install DIR`，相对路径以启动脚本时的工作目录为基准。
+只有版本正确且 Widgets、Concurrent、XCB 插件和 `lrelease` 均存在时才跳过构建。
 
-根目录配置会自动优先发现 `3rdparty/qt5/lib/cmake/Qt5/Qt5Config.cmake`。若该目录不存在，`BUILD_QT_CLIENT=ON` 会明确报错提示安装/指定 Qt5，而不会跳过客户端目标。
+Windows 10/11 使用 x64 Visual Studio 2019/2022 开发者 PowerShell，准备
+Perl、Python、CMake 3.16+、系统 `tar.exe` 和 `curl.exe` 后执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\UI\build_qt5.ps1 -Jobs 8
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+  -DOpenCV_DIR="$PWD\3rdparty\opencv\build" `
+  -DQt5_DIR="$PWD\3rdparty\qt5\lib\cmake\Qt5"
+cmake --build build --config Release
+$env:PATH = "$PWD\3rdparty\qt5\bin;$PWD\3rdparty\opencv\build\x64\vc16\bin;$env:PATH"
+Push-Location build
+ctest -C Release --output-on-failure
+Pop-Location
+.\build\UI\Release\shape_match_qt.exe
+```
+
+Windows 脚本使用相同 Qt 版本和校验值，安装到 `3rdparty/qt5`，保留下载/构建缓存，
+同时生成 `lrelease.exe` 和 `windeployqt.exe`。有 `jom.exe` 时使用并行编译，
+否则使用串行 `nmake`。`-CacheDir`、`-InstallDir` 和 `-Url` 可覆盖路径或镜像。
+Qt、OpenCV 和项目必须使用兼容编译器及相同架构，不可混用 MSVC 与 MinGW 库。
+发布到无开发环境的机器，请使用 `scripts/package_release.ps1` 收集 DLL 和插件。
+
+CMake 新构建目录会优先发现仓库内 Qt。切换已有构建目录时请用 `-U 'Qt5*'` 清除
+Qt 组件缓存，并明确指定 `Qt5_DIR`，
+避免沿用旧缓存中的系统 Qt；翻译工具从所选 Qt 的 `bin` 目录寻找，避免混用版本。
+缺少 Qt 或翻译工具会明确报错，关闭客户端请使用 `-DBUILD_QT_CLIENT=OFF`。
 
 ## 操作与参数映射
 

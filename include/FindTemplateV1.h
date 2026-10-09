@@ -5,12 +5,6 @@
 
 #include <opencv2/opencv.hpp>
 
-#if (defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)) && \
-    (defined(__GNUC__) || defined(__clang__))
-#define SM_AVX2_TARGET __attribute__((target("avx2")))
-#else
-#define SM_AVX2_TARGET
-#endif
 
 namespace SM_V1
 {
@@ -222,7 +216,7 @@ namespace SM_V1
         /**
          * @brief 提取特征（梯度信息）
          */
-        SM_AVX2_TARGET void _getFeature(cv::Mat search_image, cv::Mat mask_image, int width, int height,
+        void _getFeature(cv::Mat search_image, cv::Mat mask_image, int width, int height,
         std::vector<float>& p_buf_gradX, std::vector<float>& p_buf_gradY,
         std::vector<float>& p_buf_magnitude, bool useSIMD);
 
@@ -237,7 +231,7 @@ namespace SM_V1
         /**
          * @brief 精匹配
          */
-        SM_AVX2_TARGET bool _fineMatching(cv::Mat search_image, cv::Mat mask_image, T_T::ShapeInfo::Ptr shape_info_vec, int py_levels,
+        bool _fineMatching(cv::Mat search_image, cv::Mat mask_image, T_T::ShapeInfo::Ptr shape_info_vec, int py_levels,
                            int width, int height, float min_score,
                            float greediness, T_T::SearchCfg search_region, T_T::MatchResult* result_list, bool useSIMD);
 

@@ -1,5 +1,4 @@
 #include "MakeTemplateV1.h"
-#include <omp.h>
 #include <thread>
 #include <fstream>
 #include <algorithm>

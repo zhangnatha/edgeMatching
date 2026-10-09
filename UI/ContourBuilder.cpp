@@ -86,7 +86,11 @@ bool hasProperIntersection(const QPointF& a, const QPointF& b,
     if (first.p1() == second.p1() || first.p1() == second.p2() ||
         first.p2() == second.p1() || first.p2() == second.p2()) return false;
     QPointF intersection;
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
     return first.intersects(second, &intersection) == QLineF::BoundedIntersection;
+#else
+    return first.intersect(second, &intersection) == QLineF::BoundedIntersection;
+#endif
 }
 
 double nearestSpacing(const std::vector<Point>& points,

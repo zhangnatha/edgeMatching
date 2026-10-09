@@ -1206,7 +1206,11 @@ void MainWindow::restoreUiState()
     combo("metric", metric_); check("subpixel", subpixel_); check("simd", simd_);
     combo("edgeMethod", edgeMethod_);
     settings.endGroup();
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
     selectedModelPaths_ = modelPaths_ ? modelPaths_->text().split(QLatin1String(";"), Qt::SkipEmptyParts) : QStringList();
+#else
+    selectedModelPaths_ = modelPaths_ ? modelPaths_->text().split(QLatin1String(";"), QString::SkipEmptyParts) : QStringList();
+#endif
     for (QString& path : selectedModelPaths_) path = path.trimmed();
 }
 

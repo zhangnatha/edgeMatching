@@ -1,7 +1,6 @@
 #include "FindTemplateV1.h"
 #include <algorithm>
 #include <cmath>
-#include <omp.h>
 #include <thread>
 #include <fstream>
 #include <set>
@@ -9,6 +8,7 @@
 #if (defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)) && \
     (defined(__GNUC__) || defined(__clang__))
 #define SM_HAS_AVX2_INTRINSICS 1
+#define SM_AVX2_TARGET __attribute__((target("avx2")))
 #include <immintrin.h>
 #else
 #define SM_HAS_AVX2_INTRINSICS 0
@@ -353,6 +353,126 @@ std::vector<T_T::MatchResult> SearchTemplate::_filterMaxOverLapCandidates(
     return output;
 }
 
+#if SM_HAS_AVX2_INTRINSICS
+// 只在 CPU 支持 AVX2 时调用，标量入口不带 target 属性。
+SM_AVX2_TARGET static void extractGradientsAVX2(
+    const uint8_t* pInput, const uint8_t* maskdata, int width, int height,
+    int minContrast, std::vector<float>& p_buf_gradX,
+    std::vector<float>& p_buf_gradY, std::vector<float>& p_buf_magnitude)
+{
+    const __m256  vZero   = _mm256_setzero_ps();
+    const __m256  vEps    = _mm256_set1_ps(1e-6f);
+    const __m256  vThreshold = _mm256_set1_ps(static_cast<float>(minContrast));
+    const __m256i v255_i  = _mm256_set1_epi32(0xFF);
+
+    for (int j = 1; j < height - 1; ++j)
+    {
+        // 向量化范围：一次 16 像素
+        int i = 1;
+        for (; i + 15 < width - 1; i += 16)
+        {
+            const int idx = j * width + i;
+
+            // 载入 16 字节的左右/上下/掩膜
+            __m128i left8  = _mm_loadu_si128((const __m128i*)(pInput   + idx - 1));
+            __m128i right8 = _mm_loadu_si128((const __m128i*)(pInput   + idx + 1));
+            __m128i up8    = _mm_loadu_si128((const __m128i*)(pInput   + idx - width));
+            __m128i down8  = _mm_loadu_si128((const __m128i*)(pInput   + idx + width));
+            __m128i msk8   = _mm_loadu_si128((const __m128i*)(maskdata + idx));
+
+            // 扩展到 16 位（无符号->有符号容器）
+            __m256i L16 = _mm256_cvtepu8_epi16(left8);
+            __m256i R16 = _mm256_cvtepu8_epi16(right8);
+            __m256i U16 = _mm256_cvtepu8_epi16(up8);
+            __m256i D16 = _mm256_cvtepu8_epi16(down8);
+            __m256i M16 = _mm256_cvtepu8_epi16(msk8);
+
+            // 带符号差分（右-左、下-上），范围约 [-255, 255]
+            __m256i DX16 = _mm256_sub_epi16(R16, L16);
+            __m256i DY16 = _mm256_sub_epi16(D16, U16);
+
+            // 拆成低/高 128 位，再从 i16 扩到 i32、再转 float
+            __m128i DX_lo128 = _mm256_castsi256_si128(DX16);
+            __m128i DX_hi128 = _mm256_extracti128_si256(DX16, 1);
+            __m128i DY_lo128 = _mm256_castsi256_si128(DY16);
+            __m128i DY_hi128 = _mm256_extracti128_si256(DY16, 1);
+
+            __m256i DX32_lo = _mm256_cvtepi16_epi32(DX_lo128);
+            __m256i DX32_hi = _mm256_cvtepi16_epi32(DX_hi128);
+            __m256i DY32_lo = _mm256_cvtepi16_epi32(DY_lo128);
+            __m256i DY32_hi = _mm256_cvtepi16_epi32(DY_hi128);
+
+            __m256 DXf_lo = _mm256_cvtepi32_ps(DX32_lo);
+            __m256 DXf_hi = _mm256_cvtepi32_ps(DX32_hi);
+            __m256 DYf_lo = _mm256_cvtepi32_ps(DY32_lo);
+            __m256 DYf_hi = _mm256_cvtepi32_ps(DY32_hi);
+
+            // |g| = sqrt(dx^2 + dy^2)，并用 eps 夹住避免除零
+            __m256 mag2_lo = _mm256_add_ps(_mm256_mul_ps(DXf_lo, DXf_lo),
+                                           _mm256_mul_ps(DYf_lo, DYf_lo));
+            __m256 mag2_hi = _mm256_add_ps(_mm256_mul_ps(DXf_hi, DXf_hi),
+                                           _mm256_mul_ps(DYf_hi, DYf_hi));
+
+            __m256 mag_lo = _mm256_sqrt_ps(mag2_lo);
+            __m256 mag_hi = _mm256_sqrt_ps(mag2_hi);
+            _mm256_storeu_ps(&p_buf_magnitude[idx + 0], mag_lo);
+            _mm256_storeu_ps(&p_buf_magnitude[idx + 8], mag_hi);
+            const __m256 Gmask_lo = _mm256_and_ps(
+                _mm256_cmp_ps(mag_lo, vEps, _CMP_GT_OQ),
+                _mm256_cmp_ps(mag_lo, vThreshold, _CMP_GE_OQ));
+            const __m256 Gmask_hi = _mm256_and_ps(
+                _mm256_cmp_ps(mag_hi, vEps, _CMP_GT_OQ),
+                _mm256_cmp_ps(mag_hi, vThreshold, _CMP_GE_OQ));
+            mag_lo = _mm256_max_ps(mag_lo, vEps);
+            mag_hi = _mm256_max_ps(mag_hi, vEps);
+
+            // 单位梯度
+            __m256 NX_lo = _mm256_div_ps(DXf_lo, mag_lo);
+            __m256 NY_lo = _mm256_div_ps(DYf_lo, mag_lo);
+            __m256 NX_hi = _mm256_div_ps(DXf_hi, mag_hi);
+            __m256 NY_hi = _mm256_div_ps(DYf_hi, mag_hi);
+
+            // 掩膜：等于 255 的保留，其余置 0
+            __m128i M_lo128 = _mm256_castsi256_si128(M16);
+            __m128i M_hi128 = _mm256_extracti128_si256(M16, 1);
+            __m256i M32_lo  = _mm256_cvtepi16_epi32(M_lo128);
+            __m256i M32_hi  = _mm256_cvtepi16_epi32(M_hi128);
+            __m256i Meq_lo  = _mm256_cmpeq_epi32(M32_lo, v255_i);
+            __m256i Meq_hi  = _mm256_cmpeq_epi32(M32_hi, v255_i);
+            __m256  Mmask_lo = _mm256_castsi256_ps(Meq_lo);
+            __m256  Mmask_hi = _mm256_castsi256_ps(Meq_hi);
+            Mmask_lo = _mm256_and_ps(Mmask_lo, Gmask_lo);
+            Mmask_hi = _mm256_and_ps(Mmask_hi, Gmask_hi);
+
+            __m256 outX_lo = _mm256_blendv_ps(vZero, NX_lo, Mmask_lo);
+            __m256 outY_lo = _mm256_blendv_ps(vZero, NY_lo, Mmask_lo);
+            __m256 outX_hi = _mm256_blendv_ps(vZero, NX_hi, Mmask_hi);
+            __m256 outY_hi = _mm256_blendv_ps(vZero, NY_hi, Mmask_hi);
+
+            // 写回
+            _mm256_storeu_ps(&p_buf_gradX[idx + 0],  outX_lo);
+            _mm256_storeu_ps(&p_buf_gradY[idx + 0],  outY_lo);
+            _mm256_storeu_ps(&p_buf_gradX[idx + 8],  outX_hi);
+            _mm256_storeu_ps(&p_buf_gradY[idx + 8],  outY_hi);
+        }
+
+        // 残量（不足 16 个）走标量
+        for (; i < width - 1; ++i)
+        {
+            const int index = j * width + i;
+            int16_t sdx = (int16_t)pInput[index + 1]        - (int16_t)pInput[index - 1];
+            int16_t sdy = (int16_t)pInput[index + width]    - (int16_t)pInput[index - width];
+            float mag = std::sqrt(float(sdx) * float(sdx) + float(sdy) * float(sdy));
+            p_buf_magnitude[index] = mag;
+            if (!(mag > 1e-6f && mag >= static_cast<float>(minContrast)))
+                { p_buf_gradX[index] = 0.f; p_buf_gradY[index] = 0.f; }
+            else { p_buf_gradX[index] = float(sdx) / mag; p_buf_gradY[index] = float(sdy) / mag; }
+            if (maskdata[index] != 0xFF) { p_buf_gradX[index] = 0.f; p_buf_gradY[index] = 0.f; }
+        }
+    }
+}
+#endif
+
 // 获取特征信息
 void SearchTemplate::_getFeature(
     cv::Mat search_image,
@@ -379,118 +499,10 @@ void SearchTemplate::_getFeature(
 
     // 提取待测图像的梯度信息
 #if SM_HAS_AVX2_INTRINSICS
-    if (useSIMD)
+    if (useSIMD && avx2Supported())
     {
-        const __m256  vZero   = _mm256_setzero_ps();
-        const __m256  vEps    = _mm256_set1_ps(1e-6f);
-        const __m256  vThreshold = _mm256_set1_ps(static_cast<float>(search_min_contrast_));
-        const __m256i v255_i  = _mm256_set1_epi32(0xFF);
-
-        for (int j = 1; j < height - 1; ++j)
-        {
-            // 向量化范围：一次 16 像素
-            int i = 1;
-            for (; i + 15 < width - 1; i += 16)
-            {
-                const int idx = j * width + i;
-
-                // 载入 16 字节的左右/上下/掩膜
-                __m128i left8  = _mm_loadu_si128((const __m128i*)(pInput   + idx - 1));
-                __m128i right8 = _mm_loadu_si128((const __m128i*)(pInput   + idx + 1));
-                __m128i up8    = _mm_loadu_si128((const __m128i*)(pInput   + idx - width));
-                __m128i down8  = _mm_loadu_si128((const __m128i*)(pInput   + idx + width));
-                __m128i msk8   = _mm_loadu_si128((const __m128i*)(maskdata + idx));
-
-                // 扩展到 16 位（无符号->有符号容器）
-                __m256i L16 = _mm256_cvtepu8_epi16(left8);
-                __m256i R16 = _mm256_cvtepu8_epi16(right8);
-                __m256i U16 = _mm256_cvtepu8_epi16(up8);
-                __m256i D16 = _mm256_cvtepu8_epi16(down8);
-                __m256i M16 = _mm256_cvtepu8_epi16(msk8);
-
-                // 带符号差分（右-左、下-上），范围约 [-255, 255]
-                __m256i DX16 = _mm256_sub_epi16(R16, L16);
-                __m256i DY16 = _mm256_sub_epi16(D16, U16);
-
-                // 拆成低/高 128 位，再从 i16 扩到 i32、再转 float
-                __m128i DX_lo128 = _mm256_castsi256_si128(DX16);
-                __m128i DX_hi128 = _mm256_extracti128_si256(DX16, 1);
-                __m128i DY_lo128 = _mm256_castsi256_si128(DY16);
-                __m128i DY_hi128 = _mm256_extracti128_si256(DY16, 1);
-
-                __m256i DX32_lo = _mm256_cvtepi16_epi32(DX_lo128);
-                __m256i DX32_hi = _mm256_cvtepi16_epi32(DX_hi128);
-                __m256i DY32_lo = _mm256_cvtepi16_epi32(DY_lo128);
-                __m256i DY32_hi = _mm256_cvtepi16_epi32(DY_hi128);
-
-                __m256 DXf_lo = _mm256_cvtepi32_ps(DX32_lo);
-                __m256 DXf_hi = _mm256_cvtepi32_ps(DX32_hi);
-                __m256 DYf_lo = _mm256_cvtepi32_ps(DY32_lo);
-                __m256 DYf_hi = _mm256_cvtepi32_ps(DY32_hi);
-
-                // |g| = sqrt(dx^2 + dy^2)，并用 eps 夹住避免除零
-                __m256 mag2_lo = _mm256_add_ps(_mm256_mul_ps(DXf_lo, DXf_lo),
-                                               _mm256_mul_ps(DYf_lo, DYf_lo));
-                __m256 mag2_hi = _mm256_add_ps(_mm256_mul_ps(DXf_hi, DXf_hi),
-                                               _mm256_mul_ps(DYf_hi, DYf_hi));
-
-                __m256 mag_lo = _mm256_sqrt_ps(mag2_lo);
-                __m256 mag_hi = _mm256_sqrt_ps(mag2_hi);
-                _mm256_storeu_ps(&p_buf_magnitude[idx + 0], mag_lo);
-                _mm256_storeu_ps(&p_buf_magnitude[idx + 8], mag_hi);
-                const __m256 Gmask_lo = _mm256_and_ps(
-                    _mm256_cmp_ps(mag_lo, vEps, _CMP_GT_OQ),
-                    _mm256_cmp_ps(mag_lo, vThreshold, _CMP_GE_OQ));
-                const __m256 Gmask_hi = _mm256_and_ps(
-                    _mm256_cmp_ps(mag_hi, vEps, _CMP_GT_OQ),
-                    _mm256_cmp_ps(mag_hi, vThreshold, _CMP_GE_OQ));
-                mag_lo = _mm256_max_ps(mag_lo, vEps);
-                mag_hi = _mm256_max_ps(mag_hi, vEps);
-
-                // 单位梯度
-                __m256 NX_lo = _mm256_div_ps(DXf_lo, mag_lo);
-                __m256 NY_lo = _mm256_div_ps(DYf_lo, mag_lo);
-                __m256 NX_hi = _mm256_div_ps(DXf_hi, mag_hi);
-                __m256 NY_hi = _mm256_div_ps(DYf_hi, mag_hi);
-
-                // 掩膜：等于 255 的保留，其余置 0
-                __m128i M_lo128 = _mm256_castsi256_si128(M16);
-                __m128i M_hi128 = _mm256_extracti128_si256(M16, 1);
-                __m256i M32_lo  = _mm256_cvtepi16_epi32(M_lo128);
-                __m256i M32_hi  = _mm256_cvtepi16_epi32(M_hi128);
-                __m256i Meq_lo  = _mm256_cmpeq_epi32(M32_lo, v255_i);
-                __m256i Meq_hi  = _mm256_cmpeq_epi32(M32_hi, v255_i);
-                __m256  Mmask_lo = _mm256_castsi256_ps(Meq_lo);
-                __m256  Mmask_hi = _mm256_castsi256_ps(Meq_hi);
-                Mmask_lo = _mm256_and_ps(Mmask_lo, Gmask_lo);
-                Mmask_hi = _mm256_and_ps(Mmask_hi, Gmask_hi);
-
-                __m256 outX_lo = _mm256_blendv_ps(vZero, NX_lo, Mmask_lo);
-                __m256 outY_lo = _mm256_blendv_ps(vZero, NY_lo, Mmask_lo);
-                __m256 outX_hi = _mm256_blendv_ps(vZero, NX_hi, Mmask_hi);
-                __m256 outY_hi = _mm256_blendv_ps(vZero, NY_hi, Mmask_hi);
-
-                // 写回
-                _mm256_storeu_ps(&p_buf_gradX[idx + 0],  outX_lo);
-                _mm256_storeu_ps(&p_buf_gradY[idx + 0],  outY_lo);
-                _mm256_storeu_ps(&p_buf_gradX[idx + 8],  outX_hi);
-                _mm256_storeu_ps(&p_buf_gradY[idx + 8],  outY_hi);
-            }
-
-            // 残量（不足 16 个）走标量
-            for (; i < width - 1; ++i)
-            {
-                const int index = j * width + i;
-                int16_t sdx = (int16_t)pInput[index + 1]        - (int16_t)pInput[index - 1];
-                int16_t sdy = (int16_t)pInput[index + width]    - (int16_t)pInput[index - width];
-                float mag = std::sqrt(float(sdx) * float(sdx) + float(sdy) * float(sdy));
-                p_buf_magnitude[index] = mag;
-                if (!(mag > 1e-6f && mag >= static_cast<float>(search_min_contrast_)))
-                    { p_buf_gradX[index] = 0.f; p_buf_gradY[index] = 0.f; }
-                else { p_buf_gradX[index] = float(sdx) / mag; p_buf_gradY[index] = float(sdy) / mag; }
-                if (maskdata[index] != 0xFF) { p_buf_gradX[index] = 0.f; p_buf_gradY[index] = 0.f; }
-            }
-        }
+        extractGradientsAVX2(pInput, maskdata, width, height, search_min_contrast_,
+                             p_buf_gradX, p_buf_gradY, p_buf_magnitude);
 
         free(pInput);
         return;
@@ -533,6 +545,63 @@ SM_AVX2_TARGET static inline float hsum_ps_avx(__m256 v) {
     lo = _mm_hadd_ps(lo, lo);
     return _mm_cvtss_f32(lo);
 }
+// GCC 7 的 OpenMP 线程函数不会继承外层函数的 target 属性。
+// 将 AVX2 指令限制在独立函数中，线程函数只调用此入口。
+SM_AVX2_TARGET static bool accumulateFineScoreAVX2(
+    const std::vector<float>& pBufGradX_new,
+    const std::vector<float>& pBufGradY_new,
+    const std::vector<int>& rel_offsets,
+    const std::vector<float>& tmpl_dx,
+    const std::vector<float>& tmpl_dy,
+    int point_size, int base, float resultscore,
+    float& PartialSum, int& matchedCount)
+{
+    bool cannotReachBest = false;
+    const __m256 zero = _mm256_setzero_ps();
+    const __m256 lower = _mm256_set1_ps(-1.0f);
+    const __m256 upper = _mm256_set1_ps(1.0f);
+    int m = 0;
+    for (; m + 7 < point_size; m += 8)
+    {
+        const __m256i relative = _mm256_loadu_si256(
+            reinterpret_cast<const __m256i*>(&rel_offsets[m]));
+        const __m256i offsets = _mm256_add_epi32(
+            _mm256_set1_epi32(base), relative);
+        const __m256 sx = _mm256_i32gather_ps(
+            pBufGradX_new.data(), offsets, sizeof(float));
+        const __m256 sy = _mm256_i32gather_ps(
+            pBufGradY_new.data(), offsets, sizeof(float));
+        const __m256 valid = _mm256_or_ps(
+            _mm256_cmp_ps(sx, zero, _CMP_NEQ_OQ),
+            _mm256_cmp_ps(sy, zero, _CMP_NEQ_OQ));
+        __m256 dot = _mm256_add_ps(
+            _mm256_mul_ps(sx, _mm256_loadu_ps(&tmpl_dx[m])),
+            _mm256_mul_ps(sy, _mm256_loadu_ps(&tmpl_dy[m])));
+        dot = _mm256_max_ps(lower, _mm256_min_ps(upper, dot));
+        PartialSum += hsum_ps_avx(_mm256_and_ps(valid, dot));
+        matchedCount += __builtin_popcount(
+            static_cast<unsigned>(_mm256_movemask_ps(valid)));
+        const int processed = m + 8;
+        const int remaining = point_size - processed;
+        if ((PartialSum + remaining) / point_size <= resultscore)
+        {
+            cannotReachBest = true;
+            break;
+        }
+    }
+    for (; !cannotReachBest && m < point_size; ++m)
+    {
+        const int offset = base + rel_offsets[m];
+        const float sx = pBufGradX_new[offset];
+        const float sy = pBufGradY_new[offset];
+        if (sx == 0.0f && sy == 0.0f) continue;
+        ++matchedCount;
+        float dot = sx * tmpl_dx[m] + sy * tmpl_dy[m];
+        PartialSum += std::max(-1.0f, std::min(1.0f, dot));
+    }
+    return cannotReachBest;
+}
+
 #endif
 
 // 待测图像精匹配
@@ -708,49 +777,9 @@ bool SearchTemplate::_fineMatching(
                                       metric_ == I_I::USE_POLARITY;
                 if (fastSIMD)
                 {
-                    const __m256 zero = _mm256_setzero_ps();
-                    const __m256 lower = _mm256_set1_ps(-1.0f);
-                    const __m256 upper = _mm256_set1_ps(1.0f);
-                    const int base = j * width + i;
-                    int m = 0;
-                    for (; m + 7 < point_size; m += 8)
-                    {
-                        const __m256i relative = _mm256_loadu_si256(
-                            reinterpret_cast<const __m256i*>(&rel_offsets[m]));
-                        const __m256i offsets = _mm256_add_epi32(
-                            _mm256_set1_epi32(base), relative);
-                        const __m256 sx = _mm256_i32gather_ps(
-                            pBufGradX_new.data(), offsets, sizeof(float));
-                        const __m256 sy = _mm256_i32gather_ps(
-                            pBufGradY_new.data(), offsets, sizeof(float));
-                        const __m256 valid = _mm256_or_ps(
-                            _mm256_cmp_ps(sx, zero, _CMP_NEQ_OQ),
-                            _mm256_cmp_ps(sy, zero, _CMP_NEQ_OQ));
-                        __m256 dot = _mm256_add_ps(
-                            _mm256_mul_ps(sx, _mm256_loadu_ps(&tmpl_dx[m])),
-                            _mm256_mul_ps(sy, _mm256_loadu_ps(&tmpl_dy[m])));
-                        dot = _mm256_max_ps(lower, _mm256_min_ps(upper, dot));
-                        PartialSum += hsum_ps_avx(_mm256_and_ps(valid, dot));
-                        matchedCount += __builtin_popcount(
-                            static_cast<unsigned>(_mm256_movemask_ps(valid)));
-                        const int processed = m + 8;
-                        const int remaining = point_size - processed;
-                        if ((PartialSum + remaining) / point_size <= resultscore)
-                        {
-                            cannotReachBest = true;
-                            break;
-                        }
-                    }
-                    for (; !cannotReachBest && m < point_size; ++m)
-                    {
-                        const int offset = base + rel_offsets[m];
-                        const float sx = pBufGradX_new[offset];
-                        const float sy = pBufGradY_new[offset];
-                        if (sx == 0.0f && sy == 0.0f) continue;
-                        ++matchedCount;
-                        float dot = sx * tmpl_dx[m] + sy * tmpl_dy[m];
-                        PartialSum += std::max(-1.0f, std::min(1.0f, dot));
-                    }
+                    cannotReachBest = accumulateFineScoreAVX2(
+                        pBufGradX_new, pBufGradY_new, rel_offsets, tmpl_dx, tmpl_dy,
+                        point_size, j * width + i, resultscore, PartialSum, matchedCount);
                     visibleCount = point_size;
                 }
                 else

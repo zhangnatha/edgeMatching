@@ -83,13 +83,18 @@ void ImageView::resetZoom()
 void ImageView::wheelEvent(QWheelEvent* event)
 {
     if (pixmap_->pixmap().isNull()) { event->ignore(); return; }
-    const QPointF sceneBefore = mapToScene(event->pos());
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+    const QPoint mousePosition = event->position().toPoint();
+#else
+    const QPoint mousePosition = event->pos();
+#endif
+    const QPointF sceneBefore = mapToScene(mousePosition);
     const double factor = event->angleDelta().y() > 0 ? 1.20 : (1.0 / 1.20);
     const double next = zoom_ * factor;
     if (next < 0.05 || next > 40.0) { event->accept(); return; }
     scale(factor, factor);
     zoom_ = next;
-    const QPointF sceneAfter = mapToScene(event->pos());
+    const QPointF sceneAfter = mapToScene(mousePosition);
     const QPointF delta = sceneAfter - sceneBefore;
     translate(delta.x(), delta.y());
     updatePixelRendering();
@@ -173,10 +178,10 @@ void ImageView::drawForeground(QPainter* painter, const QRectF& rect)
             if (direction.length() > 1e-6) {
                 const double angle = std::atan2(direction.dy(), direction.dx());
                 const double size = std::max<qreal>(1.0, overlay.arrowSize);
-                const QPointF left = tip - QPointF(size * std::cos(angle - M_PI / 6.0),
-                                                    size * std::sin(angle - M_PI / 6.0));
-                const QPointF right = tip - QPointF(size * std::cos(angle + M_PI / 6.0),
-                                                     size * std::sin(angle + M_PI / 6.0));
+                const QPointF left = tip - QPointF(size * std::cos(angle - std::acos(-1.0) / 6.0),
+                                                    size * std::sin(angle - std::acos(-1.0) / 6.0));
+                const QPointF right = tip - QPointF(size * std::cos(angle + std::acos(-1.0) / 6.0),
+                                                     size * std::sin(angle + std::acos(-1.0) / 6.0));
                 painter->drawLine(tip, left);
                 painter->drawLine(tip, right);
             }

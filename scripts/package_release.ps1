@@ -12,6 +12,8 @@ $ErrorActionPreference = 'Stop'
 $repoDir = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $BuildDir = [IO.Path]::GetFullPath($BuildDir)
 $OutputDir = [IO.Path]::GetFullPath($OutputDir)
+$OpenCVDir = [IO.Path]::GetFullPath($OpenCVDir)
+$QtDir = [IO.Path]::GetFullPath($QtDir)
 
 function Invoke-Checked([string]$File, [string[]]$Arguments) {
     & $File @Arguments
@@ -20,6 +22,7 @@ function Invoke-Checked([string]$File, [string[]]$Arguments) {
 
 if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) { throw 'Missing required command: cmake' }
 if ($OutputDir -eq [IO.Path]::GetPathRoot($OutputDir) -or $OutputDir -eq $repoDir -or
+    $OutputDir -eq $BuildDir -or $BuildDir.StartsWith($OutputDir + [IO.Path]::DirectorySeparatorChar) -or
     ($OutputDir.StartsWith($repoDir + [IO.Path]::DirectorySeparatorChar) -and
      -not $OutputDir.StartsWith((Join-Path $repoDir 'dist') + [IO.Path]::DirectorySeparatorChar) -and
      $OutputDir -ne (Join-Path $repoDir 'dist'))) {
@@ -28,22 +31,29 @@ if ($OutputDir -eq [IO.Path]::GetPathRoot($OutputDir) -or $OutputDir -eq $repoDi
 
 # 根据本地依赖判断是否构建 Qt 客户端。
 $qtConfig = Join-Path $QtDir 'lib\cmake\Qt5\Qt5Config.cmake'
-$qtEnabled = (-not $NoQt) -and (Test-Path $qtConfig)
-$qtFlag = if ($qtEnabled) { 'ON' } else { 'OFF' }
-$cmakeArgs = @('-S', $repoDir, '-B', $BuildDir, '-G', $Generator,
-    '-A', 'x64', '-DCMAKE_BUILD_TYPE=Release',
-    "-DBUILD_QT_CLIENT=$qtFlag")
-if (Test-Path (Join-Path $OpenCVDir 'build\OpenCVConfig.cmake')) {
-    $cmakeArgs += "-DOpenCV_DIR=$(Join-Path $OpenCVDir 'build')"
+$qtEnabled = -not $NoQt
+if ($qtEnabled -and -not (Test-Path $qtConfig)) {
+    throw 'Local Qt5 not found. Run UI\build_qt5.ps1, specify -QtDir, or use -NoQt.'
 }
-if ($qtEnabled) { $cmakeArgs += "-DCMAKE_PREFIX_PATH=$QtDir" }
+$qtFlag = if ($qtEnabled) { 'ON' } else { 'OFF' }
+$cmakeArgs = @('-S', $repoDir, '-B', $BuildDir, '-G', $Generator, '-U', 'Qt5*',
+    '-DCMAKE_BUILD_TYPE=Release',
+    "-DBUILD_QT_CLIENT=$qtFlag")
+if ($Generator -like 'Visual Studio *') { $cmakeArgs += @('-A', 'x64') }
+$opencvConfigDir = $null
+foreach ($candidate in @($OpenCVDir, (Join-Path $OpenCVDir 'build'), (Join-Path $OpenCVDir 'lib\cmake\opencv4'))) {
+    if (Test-Path (Join-Path $candidate 'OpenCVConfig.cmake')) { $opencvConfigDir = $candidate; break }
+}
+if (-not $opencvConfigDir) { throw "OpenCVConfig.cmake not found below $OpenCVDir" }
+$cmakeArgs += "-DOpenCV_DIR=$opencvConfigDir"
+if ($qtEnabled) { $cmakeArgs += @("-DCMAKE_PREFIX_PATH=$QtDir", "-DQt5_DIR=$(Split-Path $qtConfig)") }
 
 Write-Host "Configuring release build (Qt client: $qtEnabled)..."
 Invoke-Checked 'cmake' $cmakeArgs
 Write-Host 'Building release binaries...'
 Invoke-Checked 'cmake' @('--build', $BuildDir, '--config', 'Release', '--parallel')
 
-$stage = Join-Path ([IO.Path]::GetTempPath()) ("edgeMatching-release-{0}" -f ([guid]::NewGuid()))
+$stage = Join-Path $repoDir ("edgeMatching-release-{0}" -f ([guid]::NewGuid()))
 New-Item -ItemType Directory -Path $stage | Out-Null
 try {
     Invoke-Checked 'cmake' @('--install', $BuildDir, '--config', 'Release', '--prefix', $stage)
@@ -56,8 +66,42 @@ try {
         $candidate = Join-Path $BuildDir "Release\$name"
         if (Test-Path $candidate) { Copy-Item $candidate $binDir -Force }
     }
-    $opencvBin = Join-Path $OpenCVDir 'bin'
-    if (Test-Path $opencvBin) { Copy-Item (Join-Path $opencvBin '*.dll') $binDir -Force -ErrorAction SilentlyContinue }
+    # 官方 Windows 包的 DLL 位于 build\x64\vc16\bin，源码安装通常位于 bin。
+    $opencvDlls = @(Get-ChildItem $OpenCVDir -Recurse -File -Filter '*.dll' |
+        Where-Object { $_.Directory.Name -eq 'bin' -and $_.FullName -notmatch '[\\/]x86[\\/]' })
+    if (-not $opencvDlls.Count) { throw "OpenCV runtime DLLs not found below $OpenCVDir" }
+    $opencvDlls | Copy-Item -Destination $binDir -Force
+
+    # 复制 MSVC 的可再分发运行库，使 CLI 也能在未安装 Visual Studio 的机器上运行。
+    if ($Generator -ne 'MinGW Makefiles' -and ($Generator -like 'Visual Studio *' -or $env:VCToolsRedistDir)) {
+        $redistDir = $env:VCToolsRedistDir
+        if (-not $redistDir) {
+            $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+            if (Test-Path $vswhere) {
+                $vsInstall = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+                if ($LASTEXITCODE -ne 0) { throw 'vswhere failed' }
+                if ($vsInstall) {
+                    $redistRoot = Join-Path $vsInstall 'VC\Redist\MSVC'
+                    $latest = Get-ChildItem $redistRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
+                    if ($latest) { $redistDir = $latest.FullName }
+                }
+            }
+        }
+        if (-not $redistDir) { throw 'MSVC redistributable directory not found. Use a Visual Studio developer shell.' }
+        $crtDirs = @(Get-ChildItem (Join-Path $redistDir 'x64') -Directory -Filter 'Microsoft.VC*.CRT')
+        if (-not $crtDirs.Count) { throw "MSVC x64 runtime DLLs not found in $redistDir" }
+        foreach ($crt in $crtDirs) { Copy-Item (Join-Path $crt.FullName '*.dll') $binDir -Force }
+        $openmpDirs = @(Get-ChildItem (Join-Path $redistDir 'x64') -Directory -Filter 'Microsoft.VC*.OpenMP')
+        foreach ($openmp in $openmpDirs) { Copy-Item (Join-Path $openmp.FullName '*.dll') $binDir -Force }
+    } elseif ($Generator -eq 'MinGW Makefiles') {
+        $compiler = (Get-Command 'g++.exe' -ErrorAction Stop).Source
+        foreach ($name in 'libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll', 'libgomp-1.dll') {
+            $runtime = & $compiler "-print-file-name=$name"
+            if ($LASTEXITCODE -ne 0) { throw "Cannot locate MinGW runtime: $name" }
+            if (-not (Test-Path $runtime)) { $runtime = Join-Path (Split-Path $compiler) $name }
+            if (Test-Path $runtime) { Copy-Item $runtime $binDir -Force }
+        }
+    }
 
     if ($qtEnabled) {
         $qtDeploy = Join-Path $QtDir 'bin\windeployqt.exe'
