@@ -27,6 +27,84 @@ function Invoke-Checked([string]$File, [string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { throw "$File failed with exit code $LASTEXITCODE" }
 }
 
+function Ensure-PerlTool([string]$CacheDirectory, [string]$ToolchainName) {
+    if (Get-Command perl.exe -ErrorAction SilentlyContinue) {
+        return
+    }
+    foreach ($cand in @('C:\Strawberry\perl\bin', 'D:\Strawberry\perl\bin')) {
+        if (Test-Path (Join-Path $cand 'perl.exe')) {
+            $env:PATH = "$cand;$env:PATH"
+            Write-Host "Found Strawberry Perl at $cand; added to PATH."
+            return
+        }
+    }
+    $gitCmd = Get-Command git.exe -ErrorAction SilentlyContinue
+    $gitPerlCandidates = @()
+    if ($gitCmd) {
+        $gitRoot = Split-Path -Parent (Split-Path -Parent $gitCmd.Source)
+        $gitPerlCandidates += (Join-Path $gitRoot 'usr\bin\perl.exe')
+    }
+    $gitPerlCandidates += @(
+        'D:\Program Files\Git\usr\bin\perl.exe',
+        'C:\Program Files\Git\usr\bin\perl.exe',
+        'C:\Program Files (x86)\Git\usr\bin\perl.exe'
+    )
+    $foundGitPerl = $null
+    foreach ($cand in $gitPerlCandidates) {
+        if (Test-Path -LiteralPath $cand) {
+            $foundGitPerl = [IO.Path]::GetFullPath($cand)
+            break
+        }
+    }
+    if ($foundGitPerl) {
+        $toolsDir = Join-Path $CacheDirectory 'tools\bin'
+        New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+        $shimExe = Join-Path $toolsDir 'perl.exe'
+        if (-not (Test-Path -LiteralPath $shimExe)) {
+            $shimSrc = Join-Path $CacheDirectory 'tools\perl_shim.c'
+            $escapedTarget = $foundGitPerl.Replace('\', '\\')
+            $cCode = @"
+#include <windows.h>
+#include <stdio.h>
+
+int main() {
+    LPWSTR cmdLine = GetCommandLineW();
+    const wchar_t* target = L"$escapedTarget";
+    const wchar_t* p = cmdLine;
+    if (*p == L'"') { p++; while (*p && *p != L'"') p++; if (*p == L'"') p++; }
+    else { while (*p && *p != L' ') p++; }
+    while (*p == L' ') p++;
+    wchar_t newCmd[32768];
+    _snwprintf(newCmd, 32768, L"\"%s\" %s", target, p);
+    STARTUPINFOW si = { sizeof(si) };
+    PROCESS_INFORMATION pi = { 0 };
+    if (!CreateProcessW(NULL, newCmd, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) return 1;
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD exitCode = 0;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    return (int)exitCode;
+}
+"@
+            Set-Content -LiteralPath $shimSrc -Value $cCode -Encoding UTF8
+            if ($ToolchainName -eq 'MinGW' -or (Get-Command gcc.exe -ErrorAction SilentlyContinue)) {
+                Invoke-Checked 'gcc.exe' @('-O2', $shimSrc, '-o', $shimExe)
+            } else {
+                Invoke-Checked 'cl.exe' @('/O2', "/Fe:$shimExe", $shimSrc)
+            }
+            Remove-Item -LiteralPath $shimSrc -Force
+        }
+        $env:PATH = "$toolsDir;$env:PATH"
+        Write-Host "Configured isolated Perl forwarder pointing to $foundGitPerl (avoids sh.exe on PATH)."
+        return
+    }
+    throw 'perl.exe is required to configure and build Qt. Please install Strawberry Perl or Git for Windows.'
+}
+
+$oldPath = $env:PATH
+Ensure-PerlTool $CacheDir $Toolchain
+
 $requiredTools = @('perl.exe', 'python.exe', 'curl.exe')
 if ($Toolchain -eq 'MinGW') { $requiredTools += @('gcc.exe', 'g++.exe', 'mingw32-make.exe') }
 else { $requiredTools += @('cl.exe', 'nmake.exe') }
@@ -140,6 +218,26 @@ with tarfile.open(sys.argv[1], "r:xz") as archive:
         Remove-Item -LiteralPath $extractScript -Force
         Set-Content -Path $extractMarker -Value $sha256 -Encoding ASCII
     }
+    $fsEngine = Join-Path $sourceDir 'qtbase\src\corelib\io\qfilesystemengine_win.cpp'
+    if (Test-Path $fsEngine) {
+        $content = Get-Content -LiteralPath $fsEngine -Raw
+        $oldDef = '#if defined(Q_CC_MINGW) && WINVER < 0x0602 //  Windows 8 onwards'
+        $newDef = '#if defined(Q_CC_MINGW) && WINVER < 0x0602 && (!defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0602) //  Windows 8 onwards'
+        if ($content.Contains($oldDef)) {
+            $content = $content.Replace($oldDef, $newDef)
+            Set-Content -LiteralPath $fsEngine -Value $content -Encoding UTF8
+        }
+    }
+    $qCollGen = Join-Path $sourceDir 'qttools\src\assistant\qcollectiongenerator\main.c'
+    if (Test-Path $qCollGen) {
+        $content = Get-Content -LiteralPath $qCollGen -Raw
+        $oldSpawn = '_spawnvp(_P_WAIT, newPath, argv)'
+        $newSpawn = '_spawnvp(_P_WAIT, newPath, (const char * const *)argv)'
+        if ($content.Contains($oldSpawn)) {
+            $content = $content.Replace($oldSpawn, $newSpawn)
+            Set-Content -LiteralPath $qCollGen -Value $content -Encoding UTF8
+        }
+    }
     Push-Location $buildDir
     try {
         $configFile = Join-Path $buildDir '.shape-match-qt-config'
@@ -184,6 +282,7 @@ with tarfile.open(sys.argv[1], "r:xz") as archive:
 } finally {
     $env:TMP = $oldTmp
     $env:TEMP = $oldTemp
+    $env:PATH = $oldPath
     foreach ($name in $savedNativeEnv.Keys) {
         [Environment]::SetEnvironmentVariable($name, $savedNativeEnv[$name], 'Process')
     }

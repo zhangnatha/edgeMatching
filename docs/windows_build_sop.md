@@ -1,8 +1,8 @@
 # Windows 构建与打包 SOP
 
 适用于 Windows 10/11，使用原生 PowerShell 和同一套 x64 MinGW-w64。
-提前安装 Git、CMake 3.16+、MinGW-w64、Perl、Python 3.6+，确认 `tar.exe`、
-`curl.exe` 可用。MinGW 的 `bin` 放在 PATH 前面，Git/MSYS 的 `usr/bin` 不加入 PATH。
+提前安装 Git、CMake 3.16+、MinGW-w64、Python 3.6+，确认 `tar.exe`、
+`curl.exe` 可用。Perl 可使用独立 Strawberry Perl，亦可直接使用 Git 自带 Perl（`UI/build_qt5.ps1` 会自动桥接并隔离 `sh.exe`）。MinGW 的 `bin` 放在 PATH 前面，Git/MSYS 的 `usr/bin` 切勿加入全局 PATH。
 以下命令在仓库根目录执行，每一步成功后再继续。
 
 ## 1. 安装第三方库
@@ -23,8 +23,8 @@ OpenCV、Qt 分别安装到 `3rdparty/opencv`、`3rdparty/qt5`，无需系统 Qt
 
 ```powershell
 $root = $PWD.Path
-# 修改为编译 OpenCV、Qt 时使用的 MinGW 目录，避免选中 Strawberry 的 GCC。
-$mingw = "D:/Prog/winlibs64ucrt_stage/mingw64/bin"
+# 自动定位 MinGW bin 目录（确保优先于可能存在的其他 GCC），或手动显式指定
+$mingw = Split-Path -Parent (Get-Command gcc.exe).Source
 $env:PATH = "$mingw;$env:PATH"
 $ocv = Get-ChildItem 3rdparty/opencv -Recurse -Filter OpenCVConfig.cmake | Select-Object -First 1
 cmake -S . -B build-mingw -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release `
@@ -74,7 +74,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package_release.ps1 
 
 生成 `dist/edgeMatching-windows` 和同名 ZIP。将整个目录复制或解压到目标机器，
 从 `bin` 启动即可，无需安装 Qt、OpenCV 或编译工具。当前为便携包，不生成安装向导。
-Windows 实机验收尚未完成，发布前应在 Windows 10/11 上验证。
+已在 Windows 10/11 x64 环境配合 MinGW-w64 完成实机全量编译与 CTest 回归验证。
 
 使用 MSVC 时，在 x64 Visual Studio 开发者 PowerShell 中给两个依赖脚本传入
 `-Toolchain MSVC`，项目和打包生成器改为 `Visual Studio 17 2022`，项目配置加
